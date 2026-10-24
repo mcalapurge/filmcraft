@@ -357,6 +357,7 @@ fn next_id_is_raised_past_every_id_in_the_file() {
                     speaker: None,
                     cue_id: None,
                     settings: String::new(),
+                    words: Vec::new(),
                 });
                 p.sequence_mut(seq).unwrap().caption_tracks.push(track);
             }),

@@ -17,6 +17,7 @@ pub mod graphics_templates;
 pub mod import_mode;
 pub mod interchange_export;
 pub mod keyboard;
+pub mod live_captions;
 pub mod lumetri;
 pub mod masks;
 pub mod media_browser;
@@ -102,6 +103,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Progress => events::progress(app, ui, rect),
         PanelKind::ReferenceMonitor => reference::show(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
+        PanelKind::LiveCaptions => live_captions::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
         PanelKind::TextToSpeech => tts::show(app, ui, rect),
         PanelKind::ProjectNotes => notes::show(app, ui, rect),

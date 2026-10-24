@@ -7,6 +7,11 @@
 //!
 //! Caption text is kept as written (lines separated by `\n`, inline `<i>`/`<b>`/`<u>` tags and
 //! WebVTT cue settings preserved) so files round-trip; renderers strip markup for display.
+//!
+//! **Word-timed captions** (social "live" captions, one to four words at a time with the spoken
+//! word highlighted) carry [`Caption::words`]: each word's bounds as offsets from the caption's
+//! start, so moving a caption moves its words. The track style's [`WordHighlight`] says how the
+//! word being spoken is drawn; [`CaptionStyle::preset`] gives ready-made looks.
 
 use filmcraft_time::{Tick, TimeRange};
 use serde::{Deserialize, Serialize};
@@ -70,13 +75,49 @@ pub enum CaptionAnchor {
     Bottom,
 }
 
+/// How the word being spoken is marked in a word-timed caption.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WordHighlight {
+    /// Every word drawn alike.
+    #[default]
+    Off,
+    /// The spoken word in [`CaptionStyle::highlight_color`].
+    Color,
+    /// A rounded box in [`CaptionStyle::highlight_box_color`] behind the spoken word.
+    Box,
+    /// Words appear as they are spoken; the line keeps its final layout so nothing shifts.
+    Reveal,
+}
+
+impl WordHighlight {
+    pub const ALL: [WordHighlight; 4] = [WordHighlight::Off, WordHighlight::Color, WordHighlight::Box, WordHighlight::Reveal];
+    pub fn label(self) -> &'static str {
+        match self {
+            WordHighlight::Off => "Off",
+            WordHighlight::Color => "Color",
+            WordHighlight::Box => "Box",
+            WordHighlight::Reveal => "Reveal",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<WordHighlight> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" => Some(WordHighlight::Off),
+            "color" | "colour" => Some(WordHighlight::Color),
+            "box" => Some(WordHighlight::Box),
+            "reveal" | "karaoke" => Some(WordHighlight::Reveal),
+            _ => None,
+        }
+    }
+}
+
 /// Track-level caption style (Premiere's caption track style / Essential Graphics text settings).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptionStyle {
     /// Font family name (bundled, craft-fonts or system); unknown or empty names fall back to Inter.
     pub font: String,
-    /// Font size in pixels for a 1080-line frame (scaled with the frame height).
+    /// Font size in pixels for a 1080-line frame (scaled with the frame height, or with the
+    /// shorter side when [`CaptionStyle::short_side`] is on).
     pub size: f32,
     /// Text colour, sRGB + alpha.
     pub color: [u8; 4],
@@ -93,6 +134,23 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Font style within the family (`"SemiBold"`, `"Bold"`…); the nearest weight is used.
+    pub font_style: String,
+    /// Draw the text in capitals.
+    pub uppercase: bool,
+    /// How the spoken word of a word-timed caption is marked.
+    pub highlight: WordHighlight,
+    /// Text colour of the spoken word (every mode but `Off`).
+    pub highlight_color: [u8; 4],
+    /// Box behind the spoken word ([`WordHighlight::Box`]).
+    pub highlight_box_color: [u8; 4],
+    /// Size of the spoken word relative to the others (1 = same size; above 1 it "pops").
+    pub highlight_scale: f32,
+    /// Size and outline are for 1080 pixels of the frame's *shorter* side rather than its height,
+    /// so a look reads the same on vertical (1080×1920), square and landscape video. Off (the
+    /// subtitle convention, and what older projects have), they follow the frame height, which
+    /// makes text on vertical video 1.78× larger.
+    pub short_side: bool,
 }
 
 impl Default for CaptionStyle {
@@ -109,8 +167,94 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            font_style: "SemiBold".into(),
+            uppercase: false,
+            highlight: WordHighlight::Off,
+            highlight_color: [255, 214, 10, 255],
+            highlight_box_color: [124, 77, 255, 255],
+            highlight_scale: 1.0,
+            short_side: false,
         }
     }
+}
+
+/// The ready-made caption looks of the caption editor, by name ([`CaptionStyle::preset`]).
+pub const CAPTION_PRESETS: [&str; 8] = ["Classic", "Pop", "Box", "Karaoke", "Neon", "Banner", "Minimal", "Subtitle"];
+
+impl CaptionStyle {
+    /// A ready-made look from [`CAPTION_PRESETS`] (case-insensitive); `None` for an unknown name.
+    /// The social looks sit in the lower middle of the frame, clear of a phone app's buttons.
+    pub fn preset(name: &str) -> Option<CaptionStyle> {
+        let base = CaptionStyle {
+            font_style: "Bold".into(),
+            size: 84.0,
+            background: false,
+            outline: 6.0,
+            outline_color: [0, 0, 0, 255],
+            anchor: CaptionAnchor::Bottom,
+            margin: 0.28,
+            line_spacing: 1.15,
+            uppercase: true,
+            short_side: true,
+            ..CaptionStyle::default()
+        };
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "classic" => CaptionStyle { highlight: WordHighlight::Color, highlight_color: [255, 214, 10, 255], ..base },
+            "pop" => CaptionStyle { highlight: WordHighlight::Color, highlight_color: [57, 255, 20, 255], highlight_scale: 1.18, ..base },
+            "box" => CaptionStyle {
+                highlight: WordHighlight::Box,
+                highlight_color: [255, 255, 255, 255],
+                highlight_box_color: [124, 77, 255, 255],
+                outline: 0.0,
+                ..base
+            },
+            "karaoke" => CaptionStyle { highlight: WordHighlight::Reveal, highlight_color: [255, 255, 255, 255], ..base },
+            "neon" => {
+                CaptionStyle { outline: 8.0, outline_color: [255, 0, 170, 255], highlight: WordHighlight::Color, highlight_color: [0, 240, 255, 255], ..base }
+            }
+            "banner" => CaptionStyle {
+                highlight: WordHighlight::Box,
+                highlight_color: [0, 0, 0, 255],
+                highlight_box_color: [255, 214, 10, 255],
+                outline: 0.0,
+                background: true,
+                background_color: [0, 0, 0, 160],
+                ..base
+            },
+            "minimal" => CaptionStyle {
+                size: 64.0,
+                uppercase: false,
+                font_style: "SemiBold".into(),
+                outline: 3.0,
+                outline_color: [0, 0, 0, 200],
+                color: [255, 255, 255, 150],
+                highlight: WordHighlight::Color,
+                highlight_color: [255, 255, 255, 255],
+                ..base
+            },
+            "subtitle" => CaptionStyle::default(),
+            _ => return None,
+        })
+    }
+
+    /// [`CaptionStyle::preset`] placed for a `w`×`h` frame: on vertical video the social looks
+    /// sit 28% up, clear of a phone app's buttons and description; on landscape and square video
+    /// that would be mid-frame, so they sit near the bottom (12%) instead.
+    pub fn preset_for(name: &str, w: u32, h: u32) -> Option<CaptionStyle> {
+        let mut st = CaptionStyle::preset(name)?;
+        if st.short_side && h <= w {
+            st.margin = 0.12;
+        }
+        Some(st)
+    }
+}
+
+/// A word of a word-timed caption. Its bounds are offsets from the caption's start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptionWord {
+    pub text: String,
+    pub start: Tick,
+    pub end: Tick,
 }
 
 /// One caption block on a caption track.
@@ -131,6 +275,9 @@ pub struct Caption {
     /// WebVTT cue settings (`line:90% align:start`…), kept verbatim.
     #[serde(default)]
     pub settings: String,
+    /// Word timings of a word-timed caption, in order (empty for an ordinary caption).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<CaptionWord>,
 }
 
 impl Caption {
@@ -144,6 +291,84 @@ impl Caption {
     pub fn plain_lines(&self) -> Vec<String> {
         plain_text(&self.text).lines().map(str::to_string).collect()
     }
+
+    /// The word being spoken at `offset` from the caption's start: the last word that has
+    /// started, so a pause between words keeps the previous one lit. `None` before the first word
+    /// and for an ordinary caption.
+    pub fn word_at(&self, offset: Tick) -> Option<usize> {
+        self.words.partition_point(|w| w.start <= offset).checked_sub(1)
+    }
+
+    /// The caption's start moved by `delta` (a trim or a new in point): shift the word offsets so
+    /// the words stay where they are in the sequence, dropping words now outside the caption.
+    pub fn shift_words(&mut self, delta: Tick) {
+        if self.words.is_empty() {
+            return;
+        }
+        for w in &mut self.words {
+            w.start = Tick(w.start.0.saturating_sub(delta.0));
+            w.end = Tick(w.end.0.saturating_sub(delta.0));
+        }
+        self.clamp_words();
+    }
+
+    /// Keep the words inside the caption, in order and not overlapping; a word wholly outside it
+    /// is dropped.
+    pub fn clamp_words(&mut self) {
+        let dur = self.duration.max(Tick::ZERO);
+        self.words.retain(|w| w.end > Tick::ZERO && w.start < dur && !w.text.trim().is_empty());
+        let mut prev = Tick::ZERO;
+        for w in &mut self.words {
+            w.start = w.start.clamp(prev, dur);
+            w.end = w.end.clamp(w.start, dur);
+            prev = w.end;
+        }
+    }
+
+    /// The text of a word-timed caption changed: time the words of the new text. The same number
+    /// of words keeps every timing (a spelling fix); otherwise the span the old words covered is
+    /// shared out in proportion to word length. An ordinary caption is left alone.
+    pub fn resync_words(&mut self) {
+        if self.words.is_empty() {
+            return;
+        }
+        let texts: Vec<String> = plain_text(&self.text).split_whitespace().map(str::to_string).collect();
+        if texts.len() == self.words.len() {
+            for (w, t) in self.words.iter_mut().zip(texts) {
+                w.text = t;
+            }
+            return;
+        }
+        let a = self.words.first().map(|w| w.start).unwrap_or(Tick::ZERO);
+        let b = self.words.last().map(|w| w.end).unwrap_or(self.duration).max(a);
+        self.words = spread_words(&texts, a, b);
+    }
+
+    /// Word-time an ordinary caption: its words spread over its whole duration in proportion to
+    /// their length (imported or typed captions have no word timings).
+    pub fn time_words_evenly(&mut self) {
+        let texts: Vec<String> = plain_text(&self.text).split_whitespace().map(str::to_string).collect();
+        self.words = spread_words(&texts, Tick::ZERO, self.duration.max(Tick::ZERO));
+    }
+}
+
+/// Share `[a, b)` out among `texts` in proportion to their length (plus one for the space).
+pub fn spread_words(texts: &[String], a: Tick, b: Tick) -> Vec<CaptionWord> {
+    let weights: Vec<i128> = texts.iter().map(|t| t.chars().count() as i128 + 1).collect();
+    let total: i128 = weights.iter().sum();
+    if total <= 0 {
+        return Vec::new();
+    }
+    let span = (b.0 as i128 - a.0 as i128).max(0);
+    let at = |acc: i128| Tick((a.0 as i128 + span * acc / total).clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    let mut acc = 0i128;
+    let mut out = Vec::with_capacity(texts.len());
+    for (t, w) in texts.iter().zip(&weights) {
+        let start = at(acc);
+        acc += w;
+        out.push(CaptionWord { text: t.clone(), start, end: at(acc) });
+    }
+    out
 }
 
 /// A caption track (shown in the caption area above the video tracks).
@@ -331,6 +556,7 @@ mod tests {
                 speaker: None,
                 cue_id: None,
                 settings: String::new(),
+                words: Vec::new(),
             });
         }
         assert_eq!(t.caption_at(Tick(120)).unwrap().text, "c1");
@@ -352,10 +578,106 @@ mod tests {
                 speaker: None,
                 cue_id: None,
                 settings: String::new(),
+                words: Vec::new(),
             });
         }
         let result = std::panic::catch_unwind(|| track.check());
         assert!(result.is_ok());
         assert!(result.unwrap().is_err());
+    }
+
+    fn timed(text: &str, dur: i64, words: &[(&str, i64, i64)]) -> Caption {
+        Caption {
+            id: ClipId(1),
+            start: Tick(1000),
+            duration: Tick(dur),
+            text: text.into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: words.iter().map(|(t, a, b)| CaptionWord { text: t.to_string(), start: Tick(*a), end: Tick(*b) }).collect(),
+        }
+    }
+
+    #[test]
+    fn spoken_word_holds_through_pauses() {
+        let c = timed("a b c", 100, &[("a", 0, 10), ("b", 20, 30), ("c", 50, 90)]);
+        assert_eq!(c.word_at(Tick(-1)), None);
+        assert_eq!(c.word_at(Tick(0)), Some(0));
+        assert_eq!(c.word_at(Tick(15)), Some(0), "the pause after a keeps it lit");
+        assert_eq!(c.word_at(Tick(20)), Some(1));
+        assert_eq!(c.word_at(Tick(99)), Some(2));
+        assert_eq!(timed("x", 10, &[]).word_at(Tick(5)), None);
+    }
+
+    #[test]
+    fn words_follow_text_edits_and_trims() {
+        let mut c = timed("one two", 100, &[("one", 10, 40), ("two", 50, 90)]);
+        c.text = "One, two!".into();
+        c.resync_words();
+        assert_eq!(c.words.iter().map(|w| (w.text.as_str(), w.start.0)).collect::<Vec<_>>(), [("One,", 10), ("two!", 50)]);
+        c.text = "a b c".into();
+        c.resync_words();
+        assert_eq!(c.words.len(), 3);
+        assert_eq!((c.words[0].start, c.words[2].end), (Tick(10), Tick(90)), "spread over the old span");
+        assert!(c.words.windows(2).all(|w| w[0].end <= w[1].start));
+        // a trim of 30 at the head: words keep their sequence time, the first is cut to fit
+        c.start += Tick(30);
+        c.duration -= Tick(30);
+        c.shift_words(Tick(30));
+        assert!(c.words.iter().all(|w| w.start >= Tick::ZERO && w.end <= c.duration));
+        // an ordinary caption is not made word-timed by a text edit
+        let mut plain = timed("hi", 10, &[]);
+        plain.text = "hello there".into();
+        plain.resync_words();
+        assert!(plain.words.is_empty());
+        plain.time_words_evenly();
+        assert_eq!(plain.words.len(), 2);
+        assert_eq!(plain.words[1].end, Tick(10));
+    }
+
+    #[test]
+    fn hostile_word_times_are_clamped() {
+        let mut c = timed("a b c", 100, &[("a", i64::MIN, i64::MAX), ("b", 500, 400), ("c", -50, -10)]);
+        c.clamp_words();
+        assert!(c.words.iter().all(|w| w.start >= Tick::ZERO && w.start <= w.end && w.end <= c.duration));
+        c.shift_words(Tick(i64::MIN));
+        c.shift_words(Tick(i64::MAX));
+        assert!(spread_words(&["x".into()], Tick(i64::MAX), Tick(i64::MIN)).iter().all(|w| w.start == w.end));
+        assert!(spread_words(&[], Tick(0), Tick(10)).is_empty());
+    }
+
+    #[test]
+    fn presets_and_back_compat() {
+        for name in CAPTION_PRESETS {
+            assert!(CaptionStyle::preset(name).is_some(), "{name}");
+            assert!(CaptionStyle::preset(&name.to_uppercase()).is_some(), "{name}");
+        }
+        assert!(CaptionStyle::preset("nope").is_none());
+        assert_eq!(CaptionStyle::preset("Subtitle"), Some(CaptionStyle::default()));
+        // projects saved before word timings and highlight load unchanged
+        let old: CaptionStyle = serde_json::from_str(r#"{"font":"Inter","size":40.0}"#).unwrap();
+        assert_eq!(old.highlight, WordHighlight::Off);
+        assert_eq!(old.font_style, "SemiBold");
+        let c: Caption = serde_json::from_str(r#"{"id":1,"start":0,"duration":10,"text":"hi"}"#).unwrap();
+        assert!(c.words.is_empty());
+        assert!(!serde_json::to_string(&c).unwrap().contains("words"), "ordinary captions save as before");
+        for (name, h) in [("karaoke", WordHighlight::Reveal), ("colour", WordHighlight::Color), ("none", WordHighlight::Off), ("BOX", WordHighlight::Box)] {
+            assert_eq!(WordHighlight::from_name(name), Some(h));
+        }
+    }
+
+    #[test]
+    fn looks_are_placed_for_the_frame_shape() {
+        let v = CaptionStyle::preset_for("Classic", 1080, 1920).unwrap();
+        let l = CaptionStyle::preset_for("Classic", 1920, 1080).unwrap();
+        let sq = CaptionStyle::preset_for("Pop", 1080, 1080).unwrap();
+        assert!((v.margin - 0.28).abs() < 1e-6, "vertical: clear of the phone app's buttons");
+        assert!((l.margin - 0.12).abs() < 1e-6 && (sq.margin - 0.12).abs() < 1e-6, "landscape and square: near the bottom");
+        assert_eq!(CaptionStyle::preset_for("Subtitle", 1920, 1080), Some(CaptionStyle::default()), "subtitles keep their placement");
+        assert!(CaptionStyle::preset_for("nope", 1, 1).is_none());
+        // older projects have no short_side and keep sizing by height
+        let old: CaptionStyle = serde_json::from_str(r#"{"size":40.0}"#).unwrap();
+        assert!(!old.short_side);
     }
 }

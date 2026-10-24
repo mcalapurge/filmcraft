@@ -5,9 +5,13 @@
 //! alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
 //! and rasterises it into a small premultiplied linear-light RGBA [`Overlay`] positioned in the
 //! frame. Renderers composite overlays over the finished picture.
+//!
+//! A word-timed caption ([`Caption::words`]) is laid out word by word, and the word spoken at the
+//! time drawn is marked as the style's [`WordHighlight`] says: its own colour, a rounded box
+//! behind it, or (Reveal) only the words spoken so far drawn; `highlight_scale` makes it pop.
 
 use filmcraft_color::srgb_to_linear;
-use filmcraft_project::{Caption, CaptionAlign, CaptionAnchor, CaptionStyle, CaptionTrack, Sequence};
+use filmcraft_project::{Caption, CaptionAlign, CaptionAnchor, CaptionStyle, CaptionTrack, Sequence, WordHighlight};
 use filmcraft_time::Tick;
 
 use filmcraft_text::{ParagraphStyle, TextStyle, layout, render};
@@ -55,10 +59,17 @@ impl Overlay {
     }
 }
 
-/// The caption face: the track's font family (Inter when empty or not installed) in SemiBold at `px`.
-fn caption_style(font: &str, px: f32) -> TextStyle {
+/// The caption face: the track's font family (Inter when empty or not installed) in its style
+/// (SemiBold when empty) at `px`.
+fn caption_style(font: &str, font_style: &str, px: f32) -> TextStyle {
     let family = if font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { font.trim() };
-    TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() }
+    let style = if font_style.trim().is_empty() { "SemiBold" } else { font_style.trim() };
+    TextStyle { family: family.into(), style: style.into(), size: px, ..Default::default() }
+}
+
+/// `v`, or `default` when a project file or command handed us NaN or an infinity.
+fn finite(v: f32, default: f32) -> f32 {
+    if v.is_finite() { v } else { default }
 }
 
 fn lin(c: [u8; 4]) -> [f32; 4] {
@@ -110,32 +121,143 @@ fn vtt_overrides(settings: &str) -> (Option<f32>, Option<CaptionAlign>) {
     (line, align)
 }
 
-/// Lay out and rasterise one caption for a `w`×`h` frame.
+/// A piece of a caption line: a whole line of an ordinary caption, or one word of a word-timed
+/// caption (`word` is its index in [`Caption::words`]).
+struct Token {
+    text: String,
+    word: Option<usize>,
+    /// Left edge and width in frame pixels.
+    x: f32,
+    w: f32,
+}
+
+/// Word-wrap word-timed caption words to `max_w` pixels: lines of `(text, word index, width)`.
+fn wrap_words(words: &[String], ts: &TextStyle, space: f32, max_w: f32) -> Vec<Vec<(String, usize, f32)>> {
+    let mut out: Vec<Vec<(String, usize, f32)>> = Vec::new();
+    let mut cur: Vec<(String, usize, f32)> = Vec::new();
+    let mut cur_w = 0.0;
+    for (i, word) in words.iter().enumerate() {
+        let ww = filmcraft_text::measure(word, ts);
+        if !cur.is_empty() && cur_w + space + ww > max_w {
+            out.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+        }
+        cur_w += if cur.is_empty() { ww } else { space + ww };
+        cur.push((word.clone(), i, ww));
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Anti-aliased coverage of a rounded rectangle, max-ed into `m` (an `ow`×`oh` mask at `(ox, oy)`).
+fn fill_round_rect(m: &mut [f32], (ox, oy, ow, oh): (i32, i32, usize, usize), (x0, y0, x1, y1): (f32, f32, f32, f32), radius: f32) {
+    let r = radius.clamp(0.0, ((x1 - x0).min(y1 - y0) / 2.0).max(0.0));
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let (hx, hy) = ((x1 - x0) / 2.0 - r, (y1 - y0) / 2.0 - r);
+    for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
+        for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
+            let (dx, dy) = (((x as f32 + 0.5) - cx).abs() - hx, ((y as f32 + 0.5) - cy).abs() - hy);
+            let d = (dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0)) - r;
+            let a = (0.5 - d).clamp(0.0, 1.0);
+            if let Some(p) = m.get_mut((y - oy) as usize * ow + (x - ox) as usize) {
+                *p = p.max(a);
+            }
+        }
+    }
+}
+
+/// What the style's sizes (font size, outline) are relative to, for a `w`×`h` frame: 1080 lines of
+/// its height, or of its shorter side ([`CaptionStyle::short_side`]).
+fn style_scale(style: &CaptionStyle, w: usize, h: usize) -> f32 {
+    let basis = if style.short_side { w.min(h) } else { h };
+    basis as f32 / 1080.0
+}
+
+/// The caption font size in frame pixels.
+fn caption_px(style: &CaptionStyle, w: usize, h: usize) -> f32 {
+    // (a frame under 4 px high used to panic here: `clamp` with max < min)
+    (finite(style.size, 54.0).clamp(4.0, MAX_CAPTION_SIZE_1080) * style_scale(style, w, h)).clamp(4.0, (h as f32).max(4.0))
+}
+
+/// The gap between the words of a word-timed caption: a space, plus room for a highlight box.
+fn word_gap(style: &CaptionStyle, ts: &TextStyle) -> f32 {
+    let space = filmcraft_text::measure("a a", ts) - filmcraft_text::measure("aa", ts);
+    // a highlight box reaches past its word; keep it off the neighbours (the same for every
+    // word, so the line does not shift as the box moves)
+    if style.highlight == WordHighlight::Box { space + (ts.size * 0.3).round() * 0.6 } else { space }
+}
+
+/// How wide `words` draw on one line as a word-timed caption in a `w`×`h` frame, as a fraction of
+/// the width a caption may use (90% of the frame): up to 1.0 they fit on one line. Room is kept for
+/// the widest word to pop ([`CaptionStyle::highlight_scale`]). Used to decide how many words a
+/// live caption holds, and to flag captions that no longer fit.
+pub fn line_fill(style: &CaptionStyle, w: usize, h: usize, words: &[&str]) -> f32 {
+    if w == 0 || h == 0 || words.is_empty() {
+        return 0.0;
+    }
+    let ts = caption_style(&style.font, &style.font_style, caption_px(style, w, h));
+    let caps = |s: &str| if style.uppercase { s.to_uppercase() } else { s.to_string() };
+    let widths: Vec<f32> = words.iter().map(|wd| filmcraft_text::measure(&caps(wd.trim()), &ts)).collect();
+    let widest = widths.iter().copied().fold(0.0, f32::max);
+    let pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) };
+    let total = widths.iter().sum::<f32>() + word_gap(style, &ts) * (widths.len() - 1) as f32 + widest * (pop - 1.0).max(0.0);
+    total / (w as f32 * 0.9)
+}
+
+/// Lay out and rasterise one caption for a `w`×`h` frame, as it shows with no word spoken (an
+/// ordinary caption always looks like this).
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
+    render_caption_at(c, style, w, h, None)
+}
+
+/// Lay out and rasterise one caption for a `w`×`h` frame at `offset` from the caption's start.
+/// For a word-timed caption the word spoken at `offset` is drawn as the style's
+/// [`WordHighlight`] says; `None` draws it with no word spoken.
+pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, offset: Option<Tick>) -> Option<Overlay> {
     if w == 0 || h == 0 {
         return None;
     }
-    let scale = h as f32 / 1080.0;
-    let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
+    let scale = style_scale(style, w, h);
     let max_w = w as f32 * 0.9;
-    let ts = caption_style(&style.font, px);
-    let mut lines: Vec<String> = Vec::new();
-    // (speaker names are metadata; like Premiere, they are not burned in)
-    for l in c.plain_lines() {
-        lines.extend(wrap(l.trim(), &ts, max_w));
+    let caps = |s: &str| if style.uppercase { s.to_uppercase() } else { s.to_string() };
+    let timed = !c.words.is_empty();
+    let active = if timed { offset.and_then(|o| c.word_at(o)) } else { None };
+    let words: Vec<String> = c.words.iter().map(|wd| caps(wd.text.trim())).collect();
+    let mut px = caption_px(style, w, h);
+    if timed {
+        // a word too wide for the frame shrinks the caption until it fits, instead of being cut
+        // off at the frame edge (an ordinary subtitle keeps its size and wraps)
+        let probe = caption_style(&style.font, &style.font_style, px);
+        let widest = words.iter().map(|wd| filmcraft_text::measure(wd, &probe)).fold(0.0, f32::max);
+        if widest > max_w {
+            px = (px * max_w / widest).max(4.0);
+        }
     }
-    lines.retain(|l| !l.is_empty());
-    if lines.is_empty() {
+    let ts = caption_style(&style.font, &style.font_style, px);
+    // (text, word index, width) per line
+    let rows: Vec<Vec<(String, Option<usize>, f32)>> = if timed {
+        wrap_words(&words, &ts, word_gap(style, &ts), max_w).into_iter().map(|l| l.into_iter().map(|(t, i, lw)| (t, Some(i), lw)).collect()).collect()
+    } else {
+        let mut lines: Vec<String> = Vec::new();
+        // (speaker names are metadata; like Premiere, they are not burned in)
+        for l in c.plain_lines() {
+            lines.extend(wrap(caps(l.trim()).as_str(), &ts, max_w));
+        }
+        lines.into_iter().filter(|l| !l.is_empty()).map(|l| vec![(l.clone(), None, filmcraft_text::measure(&l, &ts))]).collect()
+    };
+    if rows.is_empty() {
         return None;
     }
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
-    let lh = px * style.line_spacing.clamp(0.8, 4.0);
+    let lh = px * finite(style.line_spacing, 1.25).clamp(0.8, 4.0);
     let pad_x = (px * 0.3).round();
-    let block_h = lh * lines.len() as f32;
+    let block_h = lh * rows.len() as f32;
     let (line_override, align_override) = vtt_overrides(&c.settings);
     let align = align_override.unwrap_or(style.align);
-    let margin = style.margin.clamp(0.0, 0.45) * h as f32;
+    let margin = finite(style.margin, 0.08).clamp(0.0, 0.45) * h as f32;
     let top = match (line_override, style.anchor) {
         (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
         (None, CaptionAnchor::Top) => margin,
@@ -145,35 +267,49 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     .max(0.0)
     .round();
     let side = w as f32 * 0.05;
-    let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
-    let xs: Vec<f32> = widths
-        .iter()
-        .map(|&lw| match align {
+    let space = if timed { word_gap(style, &ts) } else { 0.0 };
+    let mut widths: Vec<f32> = Vec::with_capacity(rows.len());
+    let mut lines: Vec<Vec<Token>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let lw = row.iter().map(|(_, _, tw)| *tw).sum::<f32>() + space * row.len().saturating_sub(1) as f32;
+        let mut x = match align {
             CaptionAlign::Left => side + pad_x,
             CaptionAlign::Right => w as f32 - side - pad_x - lw,
             CaptionAlign::Center => (w as f32 - lw) / 2.0,
-        })
-        .collect();
-    let outline = (style.outline * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
-    let grow = outline.ceil() + 1.0;
+        };
+        let mut toks = Vec::with_capacity(row.len());
+        for (text, word, tw) in row {
+            toks.push(Token { text, word, x, w: tw });
+            x += tw + space;
+        }
+        widths.push(lw);
+        lines.push(toks);
+    }
+    let xs: Vec<f32> = lines.iter().map(|l| l.first().map(|t| t.x).unwrap_or(0.0)).collect();
+    let pop = if active.is_some() && style.highlight != WordHighlight::Off { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) } else { 1.0 };
+    let outline = (finite(style.outline, 0.0) * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+    let grow = outline.ceil() + 1.0 + (px * (pop - 1.0).max(0.0)).ceil() + if style.highlight == WordHighlight::Box { pad_x } else { 0.0 };
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
     let by0 = (top - grow).floor();
     let by1 = (top + block_h + grow).ceil();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
     // only the visible intersection; `draw` receives the original coordinates and clips into it.
-    let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
+    let (left, top_px) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
     let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
-    if right <= left || bottom <= top {
+    if right <= left || bottom <= top_px {
         return None;
     }
-    let (ox, oy) = (left as i32, top as i32);
-    let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+    let (ox, oy) = (left as i32, top_px as i32);
+    let (ow, oh) = ((right - left) as usize, (bottom - top_px) as usize);
     if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
         return None;
     }
     let mut cover = vec![0.0f32; ow * oh];
+    let mut cover_hi = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
+    let mut hbox = vec![0.0f32; ow * oh];
+    let big = TextStyle { size: px * pop, ..ts.clone() };
     for (i, line) in lines.iter().enumerate() {
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
@@ -189,13 +325,40 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         }
         let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
-        let l = layout(line, &ts, &ParagraphStyle::default());
-        let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
-        render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
-        cover = m.a;
+        for tok in line {
+            let is_active = tok.word.is_some() && tok.word == active;
+            // Reveal: words not spoken yet are not drawn (their place is kept)
+            if style.highlight == WordHighlight::Reveal && timed && tok.word.is_some_and(|wi| active.is_none_or(|a| wi > a)) {
+                continue;
+            }
+            let hi = is_active && style.highlight != WordHighlight::Off;
+            if is_active && style.highlight == WordHighlight::Box && style.highlight_box_color[3] > 0 {
+                let (bw, bh) = (tok.w * pop + pad_x * 1.2, lh * 0.92 * pop.max(1.0));
+                let cx = tok.x + tok.w / 2.0;
+                let cy = lt + lh / 2.0;
+                fill_round_rect(&mut hbox, (ox, oy, ow, oh), (cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0), px * 0.22);
+            }
+            let (tstyle, tx) = if is_active && pop != 1.0 {
+                let bw = filmcraft_text::measure(&tok.text, &big);
+                (&big, tok.x + (tok.w - bw) / 2.0)
+            } else {
+                (&ts, tok.x)
+            };
+            let l = layout(&tok.text, tstyle, &ParagraphStyle::default());
+            let target = if hi { &mut cover_hi } else { &mut cover };
+            let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(target) };
+            render::draw(&l, &render::at(tx, baseline.round()), &mut m, (ox, oy));
+            *target = m.a;
+        }
     }
-    let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
+    let stroke = if outline > 0.0 {
+        let all: Vec<f32> = cover.iter().zip(&cover_hi).map(|(a, b)| a.max(*b)).collect();
+        dilate(&all, ow, oh, outline)
+    } else {
+        Vec::new()
+    };
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+    let (hc, hbc) = (lin(style.highlight_color), lin(style.highlight_box_color));
     let mut out = vec![0.0f32; ow * oh * 4];
     for j in 0..ow * oh {
         let mut p = [0.0f32; 4];
@@ -207,10 +370,12 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         };
         over(&mut p, bc, bg[j]);
+        over(&mut p, hbc, hbox[j]);
         if !stroke.is_empty() {
             over(&mut p, oc, stroke[j]);
         }
         over(&mut p, tc, cover[j]);
+        over(&mut p, hc, cover_hi[j]);
         out[j * 4..j * 4 + 4].copy_from_slice(&p);
     }
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
@@ -250,7 +415,7 @@ pub fn track_overlay(track: &CaptionTrack, t: Tick, w: usize, h: usize) -> Optio
         return None;
     }
     let c = track.caption_at(t)?;
-    render_caption(c, &track.style, w, h)
+    render_caption_at(c, &track.style, w, h, Some(t - c.start))
 }
 
 /// Overlays of every visible caption track of a sequence at `t`, bottom track first.
@@ -264,7 +429,16 @@ mod tests {
     use filmcraft_project::{CaptionFormat, ClipId, TrackId};
 
     fn cap(text: &str) -> Caption {
-        Caption { id: ClipId(1), start: Tick(0), duration: Tick(100), text: text.into(), speaker: None, cue_id: None, settings: String::new() }
+        Caption {
+            id: ClipId(1),
+            start: Tick(0),
+            duration: Tick(100),
+            text: text.into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: Vec::new(),
+        }
     }
 
     #[test]
@@ -384,5 +558,156 @@ mod tests {
         assert!(track_overlay(&t, Tick(5), 100, 100).is_some());
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
+    }
+
+    fn live(style: CaptionStyle) -> (Caption, CaptionStyle) {
+        let mut c = cap("one two three");
+        c.duration = Tick(300);
+        c.time_words_evenly();
+        (c, style)
+    }
+
+    fn count(o: &Overlay, f: impl Fn(&[f32]) -> bool) -> usize {
+        o.px.chunks(4).filter(|p| f(p)).count()
+    }
+
+    #[test]
+    fn spoken_word_is_drawn_in_the_highlight_colour() {
+        let st = CaptionStyle { background: false, highlight: WordHighlight::Color, highlight_color: [255, 0, 0, 255], ..Default::default() };
+        let (c, st) = live(st);
+        let red = |p: &[f32]| p[3] > 0.9 && p[0] > 0.9 && p[1] < 0.05;
+        let none = render_caption_at(&c, &st, 1920, 1080, None).unwrap();
+        assert_eq!(count(&none, red), 0, "no word spoken, nothing lit");
+        let first = render_caption_at(&c, &st, 1920, 1080, Some(c.words[0].start)).unwrap();
+        let last = render_caption_at(&c, &st, 1920, 1080, Some(c.words[2].start)).unwrap();
+        assert!(count(&first, red) > 100 && count(&last, red) > 100);
+        // the lit word moves from left to right
+        let cx = |o: &Overlay| {
+            let (mut sx, mut n) = (0usize, 0usize);
+            for (i, p) in o.px.chunks(4).enumerate() {
+                if red(p) {
+                    sx += i % o.w;
+                    n += 1;
+                }
+            }
+            o.x as f32 + sx as f32 / n.max(1) as f32
+        };
+        assert!(cx(&first) + 100.0 < cx(&last), "{} {}", cx(&first), cx(&last));
+        // with highlighting off the timing changes nothing
+        let off = CaptionStyle { highlight: WordHighlight::Off, ..st.clone() };
+        assert_eq!(render_caption_at(&c, &off, 640, 360, Some(Tick(0))), render_caption_at(&c, &off, 640, 360, Some(Tick(250))));
+    }
+
+    #[test]
+    fn box_and_reveal_and_pop() {
+        let st = CaptionStyle { background: false, highlight: WordHighlight::Box, highlight_box_color: [0, 255, 0, 255], ..Default::default() };
+        let (c, st) = live(st);
+        let green = |p: &[f32]| p[3] > 0.9 && p[1] > 0.9 && p[0] < 0.05;
+        let o = render_caption_at(&c, &st, 1920, 1080, Some(c.words[1].start)).unwrap();
+        assert!(count(&o, green) > 1000, "a box behind the spoken word");
+        let reveal = CaptionStyle { highlight: WordHighlight::Reveal, ..st.clone() };
+        let ink = |o: &Overlay| count(o, |p| p[3] > 0.5);
+        let one = render_caption_at(&c, &reveal, 1920, 1080, Some(c.words[0].start)).unwrap();
+        let all = render_caption_at(&c, &reveal, 1920, 1080, Some(c.words[2].start)).unwrap();
+        assert!(ink(&one) * 2 < ink(&all), "words appear as they are spoken: {} {}", ink(&one), ink(&all));
+        assert_eq!((one.x, one.w), (all.x, all.w), "the line does not move as words appear");
+        let pop = CaptionStyle { highlight: WordHighlight::Color, highlight_scale: 1.5, ..st.clone() };
+        let flat = CaptionStyle { highlight: WordHighlight::Color, ..st };
+        let at = Some(c.words[1].start);
+        assert!(ink(&render_caption_at(&c, &pop, 1920, 1080, at).unwrap()) > ink(&render_caption_at(&c, &flat, 1920, 1080, at).unwrap()));
+    }
+
+    #[test]
+    fn track_overlay_animates_with_time_and_hostile_styles_are_safe() {
+        let mut t = CaptionTrack::new(TrackId(1), "S".into(), CaptionFormat::Subtitle);
+        t.style = CaptionStyle::preset("Pop").unwrap();
+        let (c, _) = live(CaptionStyle::default());
+        t.captions.push(c.clone());
+        assert_ne!(track_overlay(&t, Tick(1), 640, 360), track_overlay(&t, Tick(250), 640, 360));
+        for scale in [f32::NAN, f32::INFINITY, -5.0, 1e9] {
+            let st = CaptionStyle { highlight: WordHighlight::Box, highlight_scale: scale, outline: f32::NAN, ..Default::default() };
+            let _ = render_caption_at(&c, &st, 640, 360, Some(Tick(150)));
+        }
+        let mut bad = c.clone();
+        bad.words[0].start = Tick(i64::MAX);
+        bad.words[1].end = Tick(i64::MIN);
+        let _ = render_caption_at(&bad, &t.style, 640, 360, Some(Tick(i64::MIN)));
+        let _ = render_caption_at(&bad, &t.style, 1, 1, Some(Tick(i64::MAX)));
+    }
+
+    fn live_text(text: &str) -> Caption {
+        let mut c = cap(text);
+        c.duration = Tick(1000);
+        c.time_words_evenly();
+        c
+    }
+
+    /// Columns of a rendered overlay that hold text ink (alpha over half), in frame x.
+    fn ink_span(o: &Overlay) -> (i32, i32) {
+        let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+        for (i, p) in o.px.chunks(4).enumerate() {
+            if p[3] > 0.5 {
+                let x = o.x + (i % o.w) as i32;
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn a_word_too_long_for_the_frame_shrinks_to_fit_instead_of_being_cut_off() {
+        // vertical video, the Classic look: this word is far wider than 1080 px at full size
+        let st = CaptionStyle::preset("Classic").unwrap();
+        let word = "Pneumonoultramicroscopicsilicovolcanoconiosis";
+        let c = live_text(word);
+        let o = render_caption_at(&c, &st, 1080, 1920, Some(Tick(0))).unwrap();
+        let (lo, hi) = ink_span(&o);
+        assert!(lo > 0 && hi < 1079, "the whole word is inside the frame: ink {lo}..{hi}");
+        assert!(hi - lo > 700, "and still large: {}", hi - lo);
+        assert!(line_fill(&st, 1080, 1920, &[word]) > 1.0, "it would not have fitted at full size");
+        // a short word keeps the look's size: it is not shrunk
+        let short = render_caption_at(&live_text("HI"), &st, 1080, 1920, Some(Tick(0))).unwrap();
+        let ink_h =
+            |o: &Overlay| o.px.chunks(4).enumerate().filter(|(_, p)| p[3] > 0.5).map(|(i, _)| i / o.w).fold((usize::MAX, 0), |(a, b), y| (a.min(y), b.max(y)));
+        let (a, b) = ink_h(&short);
+        let (c0, c1) = ink_h(&o);
+        assert!(b - a > c1 - c0, "the long word is drawn smaller than a short one");
+        // a hostile run of one character never panics and stays in the frame
+        let o = render_caption_at(&live_text(&"W".repeat(5000)), &st, 1080, 1920, Some(Tick(0))).unwrap();
+        assert!(o.x >= 0 && o.x as usize + o.w <= 1080);
+    }
+
+    #[test]
+    fn social_looks_are_the_same_size_on_vertical_and_landscape_video() {
+        let text_h = |st: &CaptionStyle, w: usize, h: usize| {
+            let o = render_caption_at(&live_text("HELLO"), st, w, h, Some(Tick(0))).unwrap();
+            let rows: Vec<usize> = o.px.chunks(4).enumerate().filter(|(_, p)| p[3] > 0.5).map(|(i, _)| i / o.w).collect();
+            rows.iter().max().unwrap() - rows.iter().min().unwrap()
+        };
+        let social = CaptionStyle::preset("Classic").unwrap();
+        assert!(social.short_side);
+        let (v, l) = (text_h(&social, 1080, 1920), text_h(&social, 1920, 1080));
+        assert!((v as i64 - l as i64).abs() <= 2, "vertical {v} vs landscape {l}");
+        // subtitles keep the height convention (older projects render as before): 1.78× on vertical
+        let sub = CaptionStyle { short_side: false, ..social };
+        let (v, l) = (text_h(&sub, 1080, 1920), text_h(&sub, 1920, 1080));
+        assert!(v as f32 > l as f32 * 1.6, "vertical {v} vs landscape {l}");
+    }
+
+    #[test]
+    fn line_fill_measures_against_the_frame() {
+        let st = CaptionStyle::preset("Classic").unwrap();
+        let words = ["CAPTIONS", "THAT", "POP", "EVERYWHERE"];
+        let v = line_fill(&st, 1080, 1920, &words);
+        let l = line_fill(&st, 1920, 1080, &words);
+        assert!(v > l * 1.5, "a vertical line is narrower: {v} vs {l}");
+        assert!(line_fill(&st, 1080, 1920, &["SO", "THIS"]) < 1.0);
+        assert!(v > 1.0, "four long words do not fit a vertical line: {v}");
+        // a pop look keeps room for the grown word; a box look for the box
+        let pop = CaptionStyle { highlight_scale: 1.5, ..st.clone() };
+        assert!(line_fill(&pop, 1080, 1920, &words) > v);
+        assert_eq!(line_fill(&st, 0, 0, &words), 0.0);
+        assert_eq!(line_fill(&st, 1080, 1920, &[]), 0.0);
     }
 }

@@ -296,3 +296,42 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+fn seq_words(texts: &[&str]) -> Vec<SeqWord> {
+    let sec = TICKS_PER_SECOND;
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| SeqWord {
+            text: t.to_string(),
+            start: Tick(i as i64 * sec / 4),
+            end: Tick((i as i64 + 1) * sec / 4),
+            clip: ClipId(1),
+            item: ItemId(1),
+            index: i,
+            track: 0,
+            speaker: None,
+            confidence: 1.0,
+        })
+        .collect()
+}
+
+fn block_texts(blocks: &[CaptionBlock]) -> Vec<String> {
+    blocks.iter().map(|b| b.text.clone()).collect()
+}
+
+#[test]
+fn live_captions_take_fewer_words_when_they_would_not_fit() {
+    let words = seq_words(&["a", "big", "internationalisation", "effort", "is", "underway", "now"]);
+    let rules = LiveCaptionRules { max_words: 4, max_chars: 200, ..Default::default() };
+    let rate = FrameRate::new(25, 1);
+    // everything fits: four words a caption
+    assert_eq!(block_texts(&live_caption_blocks(&words, &rules, rate, &|_| true)), ["a big internationalisation effort", "is underway now"]);
+    // a line holds 12 characters: the long word stands alone, short words share
+    let fits = |ws: &[&str]| ws.iter().map(|w| w.chars().count() + 1).sum::<usize>() - 1 <= 12;
+    assert_eq!(block_texts(&live_caption_blocks(&words, &rules, rate, &fits)), ["a big", "internationalisation", "effort is", "underway now"]);
+    // nothing ever fits: one word a caption, none lost
+    let one = live_caption_blocks(&words, &rules, rate, &|_| false);
+    assert_eq!(one.len(), words.len());
+    assert!(one.windows(2).all(|w| w[0].end <= w[1].start));
+}

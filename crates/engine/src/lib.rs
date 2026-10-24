@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+pub mod live_captions;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
@@ -1296,6 +1297,8 @@ mod interchange_auto_points_tests;
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
+#[cfg(test)]
+mod live_captions_tests;
 #[cfg(test)]
 mod locked_clip_edits_tests;
 #[cfg(test)]
