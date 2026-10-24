@@ -18,6 +18,48 @@ fn sequence_with_caption(w: u32, h: u32, text: &str) -> Session {
 const LONG_TALK: &str = "honestly the internationalisation of our infrastructure was extraordinarily complicated but we got it done in a week";
 
 #[test]
+fn live_caption_commands_are_disabled_without_what_they_need_and_undo_and_redo() {
+    // no sequence: neither command applies
+    let s = Session::default();
+    assert!(!s.is_enabled("captions.createLive"), "no sequence");
+    assert!(!s.is_enabled("captions.setWord"), "no sequence");
+
+    // ordinary captions only: Create Live Captions applies, Edit Caption Word does not
+    let mut s = sequence_with_caption(1920, 1080, "one two three four");
+    let first = |s: &Session| s.active_sequence().unwrap().caption_tracks[0].captions[0].id.0;
+    assert!(s.is_enabled("captions.createLive"));
+    assert!(!s.is_enabled("captions.setWord"), "no word-timed captions yet");
+    assert!(s.execute("captions.setWord", json!({"caption": first(&s), "index": 0, "text": "x"})).is_err());
+
+    // Create Live Captions: one undo step, and redo brings it back
+    s.execute("captions.createLive", json!({"source": "track", "maxWords": 2})).unwrap();
+    let live = texts(&s);
+    assert_eq!(live, ["one two", "three four"]);
+    assert!(s.is_enabled("captions.setWord"));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(texts(&s), ["one two three four"]);
+    assert!(!s.is_enabled("captions.setWord"));
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(texts(&s), live);
+
+    // Edit Caption Word: undo and redo
+    let id = first(&s);
+    s.execute("captions.setWord", json!({"caption": id, "index": 0, "text": "ONE"})).unwrap();
+    assert_eq!(texts(&s)[0], "ONE two");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(texts(&s)[0], "one two");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(texts(&s)[0], "ONE two");
+
+    // a locked track refuses both, and nothing changes
+    s.execute("captions.setTrack", json!({"track": "C1", "locked": true})).unwrap();
+    let before = s.active_sequence().unwrap().caption_tracks[0].clone();
+    assert!(s.execute("captions.createLive", json!({"source": "track", "maxWords": 1})).is_err());
+    assert!(s.execute("captions.setWord", json!({"caption": id, "index": 0, "text": "nope"})).is_err());
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0], before);
+}
+
+#[test]
 fn vertical_video_gets_fewer_words_per_caption_and_every_caption_fits() {
     let mut caption_counts = Vec::new();
     for (w, h) in [(1080, 1920), (1920, 1080)] {
