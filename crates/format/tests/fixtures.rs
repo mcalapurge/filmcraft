@@ -457,6 +457,35 @@ fn a_new_item_never_replaces_one_from_a_file_with_a_stale_next_id() {
 
 /// #2809: ids past what can ever be allocated. The largest possible id has no successor, and a
 /// `next_id` that high overflows `alloc_id`; such a file is refused instead of panicking (debug) or
+/// Schema 15 (before live captions): caption tracks without word timings, and track styles
+/// without the word highlight, font style, capitals or short-side sizing. They load as ordinary
+/// captions; a live caption saved now keeps its words and highlight through a round trip.
+#[test]
+fn v15_captions_load_without_live_caption_data_and_v16_roundtrips_it() {
+    use filmcraft_project::{CaptionStyle, CaptionWord, WordHighlight};
+    let l = decode(&fixture("v15-captions.fcproj")).unwrap();
+    assert_eq!(l.schema_version, 15);
+    assert!(l.migrated());
+    const { assert!(SCHEMA_VERSION >= 16) };
+    let mut p = l.project;
+    let sid = p.sequences().next().map(|i| i.id).unwrap();
+    let track = &p.sequence(sid).unwrap().caption_tracks[0];
+    assert_eq!(track.captions[0].text, "Hello there");
+    assert!(track.captions[0].words.is_empty());
+    assert_eq!(track.style.highlight, WordHighlight::Off);
+    assert_eq!(track.style.font_style, "SemiBold");
+    assert!(!track.style.uppercase && !track.style.short_side);
+    // make it a live caption and save it in the current schema
+    let track = &mut p.sequence_mut(sid).unwrap().caption_tracks[0];
+    track.style = CaptionStyle::preset("Pop").unwrap();
+    track.captions[0].words =
+        vec![CaptionWord { text: "Hello".into(), start: Tick(0), end: Tick(100) }, CaptionWord { text: "there".into(), start: Tick(100), end: Tick(200) }];
+    let again = decode(&encode(&p, true)).unwrap();
+    assert_eq!(again.schema_version, SCHEMA_VERSION);
+    assert!(!again.migrated());
+    assert_eq!(again.project, p, "word timings and the highlight style survive a save");
+}
+
 /// wrapping to 0 (release) on the first new item.
 #[test]
 fn an_exhausted_id_space_is_refused_on_load() {

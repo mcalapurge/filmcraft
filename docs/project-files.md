@@ -53,6 +53,9 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
 | 13 | Multi-stream audio | `MediaInfo::audio_streams` and `TrackItem::audio_stream`; older `audio` objects load as stream zero, missing clip indices default to zero; no-op step |
+| 14 | M7.9 | narrations (`Project::narrations`, Text to Speech); no-op step |
+| 15 | Project notes | `Project::notes` (Window ▸ Project Notes); no-op step |
+| 16 | Live captions | caption word timings (`Caption::words`) and the caption track style's word highlight, font style, capitals and short-side sizing ([captions.md](captions.md#live-captions)); no-op step |
 
 ### Migrations
 
