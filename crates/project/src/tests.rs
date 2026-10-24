@@ -208,6 +208,7 @@ fn caption_tracks_roundtrip() {
         speaker: Some("Ann".into()),
         cue_id: Some("1".into()),
         settings: "line:90%".into(),
+        words: Vec::new(),
     });
     p.sequence_mut(seq).unwrap().caption_tracks.push(ct);
     let q = Project::from_json(&p.to_json()).unwrap();

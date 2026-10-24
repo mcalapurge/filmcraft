@@ -500,6 +500,9 @@ pub struct UiState {
     /// Text panel: caption search filter.
     #[serde(default)]
     pub caption_search: String,
+    /// Live Captions panel: inspector tab and words per caption.
+    #[serde(default)]
+    pub live_captions: crate::panels::live_captions::LiveCaptionsUi,
     /// Text panel ▸ Transcript: selected words of the sequence transcript (anchor, end; indices as
     /// `transcript.inspect` lists them).
     #[serde(default)]
@@ -1000,6 +1003,7 @@ impl Default for UiState {
             export: Default::default(),
             text_tab: captions_tab(),
             caption_search: String::new(),
+            live_captions: Default::default(),
             transcript_sel: None,
             transcript_search: String::new(),
             play_after_render: true,

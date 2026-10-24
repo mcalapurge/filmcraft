@@ -36,6 +36,7 @@ pub enum PanelKind {
     TextToSpeech,
     Properties,
     Text,
+    LiveCaptions,
     Events,
     Progress,
     ReferenceMonitor,
@@ -44,7 +45,7 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 28] = [
+    pub const ALL: [PanelKind; 29] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -68,6 +69,7 @@ impl PanelKind {
         PanelKind::TextToSpeech,
         PanelKind::Properties,
         PanelKind::Text,
+        PanelKind::LiveCaptions,
         PanelKind::Events,
         PanelKind::Progress,
         PanelKind::ReferenceMonitor,
@@ -99,6 +101,7 @@ impl PanelKind {
             PanelKind::TextToSpeech => "Text to Speech",
             PanelKind::Properties => "Properties",
             PanelKind::Text => "Text",
+            PanelKind::LiveCaptions => "Live Captions",
             PanelKind::Events => "Events",
             PanelKind::Progress => "Progress",
             PanelKind::ReferenceMonitor => "Reference Monitor",

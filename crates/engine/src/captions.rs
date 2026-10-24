@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use filmcraft_captions::{Document, Format, WriteOptions};
 use filmcraft_edit as edit;
 use filmcraft_edit::Edge;
-use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, ClipId, SequenceSettings, TrackId};
+use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, ClipId, SequenceSettings, TrackId, WordHighlight};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
@@ -230,10 +230,14 @@ fn caption_json(s: &Session, c: &filmcraft_project::Caption) -> Value {
         "text": c.text,
         "speaker": c.speaker,
         "settings": c.settings,
+        "words": c.words.iter().map(|w| json!({"text": w.text, "start": (c.start + w.start).0, "end": (c.start + w.end).0})).collect::<Vec<_>>(),
     })
 }
 
 fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
+    // word-timed captions too wide for one line of the frame (Re-cut fixes them)
+    let (w, h) = crate::live_captions::frame_size(s);
+    let overflowing: Vec<u64> = crate::live_captions::overflowing(t, w, h).iter().map(|c| c.0).collect();
     json!({
         "id": t.id.0,
         "label": format!("C{}", index + 1),
@@ -248,8 +252,12 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "background": t.style.background, "backgroundColor": hex(t.style.background_color),
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
+            "fontStyle": t.style.font_style, "uppercase": t.style.uppercase,
+            "highlight": t.style.highlight.label().to_lowercase(), "highlightColor": hex(t.style.highlight_color),
+            "highlightBoxColor": hex(t.style.highlight_box_color), "highlightScale": t.style.highlight_scale,
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
+        "overflowing": overflowing,
     })
 }
 
@@ -352,7 +360,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"fontStyle":str?,"uppercase":bool?,"highlight":"off|color|box|reveal"?,"highlightColor":str?,"highlightBoxColor":str?,"highlightScale":0.5..2?,"preset":str?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -364,6 +372,7 @@ pub fn commands() -> Vec<CommandSpec> {
                         ),
                     )
                 })?;
+                let preset = str_p(p, "preset").map(|name| crate::live_captions::preset_style(s, name, "captions.setStyle")).transpose()?;
                 let p = p.clone();
                 s.edit("Caption Style", |pr, st| {
                     let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
@@ -371,6 +380,28 @@ pub fn commands() -> Vec<CommandSpec> {
                     let y = &mut t.style;
                     if bool_p(&p, "reset").unwrap_or(false) {
                         *y = CaptionStyle::default();
+                    }
+                    // a ready-made look first, so the other keys can adjust it
+                    if let Some(st) = preset.clone() {
+                        *y = st;
+                    }
+                    if let Some(v) = str_p(&p, "fontStyle") {
+                        y.font_style = v.to_string();
+                    }
+                    if let Some(b) = bool_p(&p, "uppercase") {
+                        y.uppercase = b;
+                    }
+                    if let Some(v) = str_p(&p, "highlight") {
+                        y.highlight = WordHighlight::from_name(v).ok_or_else(|| bad("captions.setStyle", format!("unknown highlight `{v}`")))?;
+                    }
+                    if let Some(c) = p.get("highlightColor").and_then(parse_color) {
+                        y.highlight_color = c;
+                    }
+                    if let Some(c) = p.get("highlightBoxColor").and_then(parse_color) {
+                        y.highlight_box_color = c;
+                    }
+                    if let Some(v) = f64_p(&p, "highlightScale") {
+                        y.highlight_scale = (v as f32).clamp(0.5, 2.0);
                     }
                     if let Some(v) = str_p(&p, "font") {
                         y.font = v.to_string();

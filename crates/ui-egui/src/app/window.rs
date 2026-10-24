@@ -57,6 +57,7 @@ impl FilmcraftApp {
                 | PanelKind::LumetriScopes
                 | PanelKind::AudioTrackMixer
                 | PanelKind::Text
+                | PanelKind::LiveCaptions
                 | PanelKind::ReferenceMonitor
                 | PanelKind::Timecode => PanelKind::Source,
                 _ => PanelKind::Project,

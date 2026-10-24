@@ -407,6 +407,157 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     out
 }
 
+/// Rules for word-timed "live" captions: a few words at a time, the spoken one highlighted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveCaptionRules {
+    /// Most words in one caption (social captions use 1 to 4).
+    pub max_words: usize,
+    /// Most characters in one caption; a single longer word still gets a caption of its own.
+    pub max_chars: usize,
+    /// A pause at least this long starts a new caption.
+    pub break_pause: Tick,
+    /// How long a caption stays up after its last word when the next one is later than that.
+    pub hold: Tick,
+}
+
+impl Default for LiveCaptionRules {
+    fn default() -> Self {
+        Self { max_words: 3, max_chars: 22, break_pause: Tick(TICKS_PER_SECOND * 3 / 5), hold: Tick(TICKS_PER_SECOND / 2) }
+    }
+}
+
+/// Group words into live caption blocks of at most `max_words` words and `max_chars`
+/// characters, that `fits` says draw on one line (the caller measures them in the track's font
+/// and frame, so long words mean fewer words per caption and a word too long for any line gets a
+/// caption of its own). A new block also starts at a speaker change, at a pause of
+/// `break_pause`, after sentence-ending punctuation, and after a comma once the block has two
+/// words. A block runs from its first word to its last plus `hold` (up to the next block, so
+/// back-to-back speech never flickers), snapped to frames.
+pub fn live_caption_blocks(words: &[SeqWord], rules: &LiveCaptionRules, rate: FrameRate, fits: &dyn Fn(&[&str]) -> bool) -> Vec<CaptionBlock> {
+    let max_words = rules.max_words.max(1);
+    let max_chars = rules.max_chars.max(1);
+    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut a = 0;
+    let mut chars = 0;
+    for (i, w) in words.iter().enumerate() {
+        let len = w.text.chars().count();
+        if let Some(prev) = i.checked_sub(1).and_then(|p| words.get(p)).filter(|_| i > a) {
+            let n = i - a;
+            let brk = n >= max_words
+                || chars + 1 + len > max_chars
+                || !fits(&words.get(a..=i).unwrap_or_default().iter().map(|w| w.text.as_str()).collect::<Vec<_>>())
+                || w.speaker != prev.speaker
+                || w.start - prev.end >= rules.break_pause
+                || prev.text.ends_with(['.', '?', '!', '…'])
+                || (n >= 2 && prev.text.ends_with([',', ';', ':']));
+            if brk {
+                groups.push(a..i);
+                a = i;
+                chars = len;
+                continue;
+            }
+            chars += 1 + len;
+        } else {
+            chars = len;
+        }
+    }
+    if a < words.len() {
+        groups.push(a..words.len());
+    }
+    let fd = rate.frame_duration();
+    let mut out: Vec<CaptionBlock> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let (Some(first), Some(last)) = (words.get(g.start), words.get(g.end.saturating_sub(1))) else { continue };
+        let mut start = rate.snap(first.start);
+        if start > first.start {
+            start -= fd;
+        }
+        let start = start.max(Tick::ZERO);
+        let mut end = rate.snap(last.end);
+        if end < last.end {
+            end += fd;
+        }
+        let text = words[g.clone()].iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        out.push(CaptionBlock { start, end: end.max(start + fd), text, speaker: first.speaker.clone(), words: g });
+    }
+    for i in 0..out.len() {
+        if i > 0 {
+            let prev_end = out[i - 1].end;
+            if out[i].start < prev_end {
+                out[i].start = prev_end;
+                out[i].end = out[i].end.max(prev_end + fd);
+            }
+        }
+        let next = out.get(i + 1).map(|n| n.start);
+        let b = &mut out[i];
+        let mut held = rate.snap(b.end + rules.hold);
+        if held < b.end + rules.hold {
+            held += fd;
+        }
+        b.end = match next {
+            Some(n) => held.min(n).max(b.end.min(n)),
+            None => held,
+        }
+        .max(b.start + fd);
+    }
+    out
+}
+
+/// Live caption blocks as word-timed captions (ids from `ctx`): each caption carries the timings
+/// of the words it shows, as offsets from its start.
+pub fn live_blocks_to_captions(blocks: &[CaptionBlock], words: &[SeqWord], ctx: &mut EditCtx) -> Vec<Caption> {
+    blocks
+        .iter()
+        .map(|b| {
+            let mut c = Caption {
+                id: ClipId(ctx.alloc()),
+                start: b.start,
+                duration: b.end - b.start,
+                text: b.text.clone(),
+                speaker: b.speaker.clone(),
+                cue_id: None,
+                settings: String::new(),
+                words: words
+                    .get(b.words.clone())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|w| filmcraft_project::CaptionWord { text: w.text.clone(), start: w.start - b.start, end: w.end - b.start })
+                    .collect(),
+            };
+            c.clamp_words();
+            c
+        })
+        .collect()
+}
+
+/// Re-cut captions into word-timed captions of at most `rules.max_words` words. Word timings a
+/// caption has are kept; a caption without them has its words spread over its duration. The
+/// words are then regrouped with [`live_caption_blocks`].
+pub fn rechunk_captions(captions: &[Caption], rules: &LiveCaptionRules, rate: FrameRate, fits: &dyn Fn(&[&str]) -> bool, ctx: &mut EditCtx) -> Vec<Caption> {
+    let mut words: Vec<SeqWord> = Vec::new();
+    for c in captions {
+        let mut c = c.clone();
+        if c.words.is_empty() {
+            c.time_words_evenly();
+        }
+        for w in &c.words {
+            words.push(SeqWord {
+                text: w.text.clone(),
+                start: c.start + w.start,
+                end: c.start + w.end,
+                clip: c.id,
+                item: ItemId(0),
+                index: 0,
+                track: 0,
+                speaker: c.speaker.clone(),
+                confidence: 1.0,
+            });
+        }
+    }
+    let blocks = live_caption_blocks(&words, rules, rate, fits);
+    live_blocks_to_captions(&blocks, &words, ctx)
+}
+
 /// Caption blocks as captions (ids from `ctx`).
 pub fn blocks_to_captions(blocks: &[CaptionBlock], ctx: &mut EditCtx) -> Vec<Caption> {
     blocks
@@ -419,6 +570,7 @@ pub fn blocks_to_captions(blocks: &[CaptionBlock], ctx: &mut EditCtx) -> Vec<Cap
             speaker: b.speaker.clone(),
             cue_id: None,
             settings: String::new(),
+            words: Vec::new(),
         })
         .collect()
 }
