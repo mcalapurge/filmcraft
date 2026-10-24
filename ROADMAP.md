@@ -107,6 +107,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- **2026-10-24:** live captions (beyond Premiere): short word-timed captions of one to four words with the spoken word highlighted (colour, box, reveal, pop), made from the sequence transcript or by re-cutting a caption track (`captions.createLive`). Each caption holds only as many words as fit one line of the frame, so long words and vertical video get fewer; a word too wide for the frame shrinks instead of being clipped; looks are sized by the frame's shorter side and placed for vertical or landscape. New Window ▸ Live Captions panel with eight original looks; project schema v16 ([details](docs/captions.md#live-captions)).
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
@@ -168,6 +169,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Progress log: live captions (word-highlighted, fitted to the frame; Live Captions panel; schema v16) |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
