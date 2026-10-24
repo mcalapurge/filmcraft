@@ -88,9 +88,21 @@ frame, colour, background box, outline, alignment, top/middle/bottom anchor and 
 rasterises it to a small premultiplied linear-light RGBA overlay. `filmcraft-render` composites the
 overlays of visible caption tracks over the finished frame (Program monitor and export burn-in).
 
-Text is set in **Inter SemiBold** (`assets/fonts/Inter-SemiBold.ttf`, SIL OFL 1.1, attributed in
-`ATTRIBUTION.md`) by the `filmcraft-text` engine: shaped with kerning and ligatures, bidi-ordered,
-and drawn from its sub-pixel positioned glyph cache.
+Word-timed (live) captions (`Caption::words`): `burn::render_caption_at` takes the time into the
+caption and draws the word being spoken as the track style's `WordHighlight` says — its own colour,
+a rounded box behind it, or only the words spoken so far (Reveal, the line keeping its final
+layout) — optionally enlarged (`highlight_scale`). Words are laid out one by one with a fixed gap
+(wider for a box, so the line never shifts as the highlight moves). A word wider than 90% of the
+frame shrinks the caption until it fits instead of being clipped. With the style's `short_side`,
+size and outline are relative to the frame's shorter side, so a look is the same size on vertical
+and landscape video. `burn::line_fill` measures how much of the line a set of words takes (room
+included for a popped word or a box); the engine uses it to decide how many words a live caption
+holds and to find captions that no longer fit.
+
+Text is set in the track's font (**Inter**, `assets/fonts/Inter-*.ttf`, SIL OFL 1.1, attributed in
+`ATTRIBUTION.md`, when none is chosen) in the track's font style (SemiBold by default) by the
+`filmcraft-text` engine: shaped with kerning and ligatures, bidi-ordered, and drawn from its
+sub-pixel positioned glyph cache.
 
 Specifications used: SMPTE ST 334-2 (CDP structure), CEA-608 / CEA-708 (public descriptions of
 the caption commands), the MacCaption MCC format description (line syntax and abbreviations),
@@ -101,6 +113,10 @@ implementation's code was consulted.
 
 - Unit tests per module (timestamps, decoding, sloppy SRT, WebVTT blocks and voices, CEA-608
   tables, PAC round trips, known SCC pop-on and roll-up streams, layout).
+- Live captions (`burn.rs`): the spoken word's colour moves left to right with time; box, reveal
+  and pop; a 45-letter word on vertical video shrinks inside the frame and a 5,000-character word
+  never panics; social looks have the same text height on 1080×1920 and 1920×1080; `line_fill`
+  against the frame; NaN / infinite style values and a 1-pixel frame never panic.
 - `tests/it/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
   settings, STYLE blocks), SCC and MCC (drop-frame and non-drop, gaps and back-to-back captions;
   MCC also through CEA-708 alone), EBU STL (25 and 29.97 fps, accents, extension blocks), TTML
