@@ -148,3 +148,29 @@ italics/bold markup is not yet drawn differently. Word-timed captions are drawn 
 the word spoken at that frame highlighted ([Live captions](#live-captions)). The captions of a nested sequence
 are part of the nest's picture: they are drawn wherever the nest is shown, in the Program monitor
 and in every export, whether or not the outer sequence shows or burns in its own.
+
+### Saving live-caption presets
+
+In **Live Captions → Templates**, enter a name and choose **Save as new** to save
+all of the current track's font, outline, position, background and spoken-word
+highlight settings. Select a preset, make edits in **Text** or **Highlight**, then
+choose **Save changes** to update that preset. Applying a preset changes the whole
+track and can be undone.
+
+Saved looks live in your preferences and are available in other projects and after
+restarting. **Save changes** on a built-in look stores your own override;
+**Reset preset** removes that override and restores its factory style on the track.
+**Delete preset** removes a custom look from the library while keeping the current
+track's style. Creating a look under an existing name requires an explicit update.
+These presets store styling, not caption text, word timings or words-per-caption.
+
+Agent commands:
+
+- `captions.listPresets {}` lists factory and saved styles with `builtIn` and
+  `customized` flags.
+- `captions.savePreset {"track":"C1","name":"My look"}` saves a track style;
+  pass `"overwrite":true` to update an existing look.
+- `captions.deletePreset {"name":"My look"}` deletes a custom look or removes
+  a built-in override.
+- `captions.setStyle {"track":"C1","preset":"My look"}` applies a saved look.
+  `captions.createLive` also accepts saved preset names.

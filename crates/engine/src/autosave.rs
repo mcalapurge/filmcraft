@@ -181,6 +181,9 @@ pub struct Preferences {
     pub project_panel: crate::project_panel::ProjectPanelPrefs,
     /// Media Browser: Favorites, recent directories, file types, view, columns.
     pub media_browser: crate::media_browser::MediaBrowserPrefs,
+    /// User caption looks, including explicit overrides of built-in looks.
+    #[serde(deserialize_with = "crate::live_captions::deserialize_presets")]
+    pub caption_presets: Vec<crate::live_captions::CaptionPreset>,
 }
 
 impl Default for Preferences {
@@ -208,6 +211,7 @@ impl Default for Preferences {
             voice_over: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            caption_presets: Vec::new(),
         }
     }
 }
