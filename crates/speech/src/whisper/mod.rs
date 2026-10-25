@@ -17,7 +17,9 @@
 //!    (`generation_config.json`; default: every head of the second half of the decoder) are
 //!    softmaxed over the window's audio frames, standardised per token, median-filtered (width 7)
 //!    and averaged; dynamic time warping through the negated matrix gives each token's start frame
-//!    (20 ms resolution). Tokens are grouped into words at spaces, punctuation joins its word.
+//!    (20 ms resolution). A leading prompt row absorbs audio before the first text token;
+//!    a trailing end-of-text row absorbs audio after the last. Tokens are grouped into words
+//!    at spaces, punctuation joins its word.
 //!
 //! 6. Word bounds are tightened past silent frames ([`crate::vad`]), so pauses stay pauses.
 //!

@@ -7,20 +7,35 @@ use super::model::Model;
 
 /// Start/end (in mel frames from the window start, 10 ms) of every token of `text`.
 pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32, heads: &[(usize, usize)], seg_frames: usize) -> Result<Vec<(usize, usize)>> {
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    if prompt.is_empty() || heads.is_empty() || seg_frames < 2 {
+        candle_core::bail!("word alignment requires a prompt, alignment heads and audio frames");
+    }
     let mut tokens = prompt.to_vec();
     tokens.extend_from_slice(text);
     tokens.push(eot);
     m.decoder.reset();
     let (_, qk) = m.decoder.forward(&tokens, xa, false, Some(heads))?;
     m.decoder.reset();
-    let Some(qk) = qk else { return Ok(vec![(0, 0); text.len()]) };
+    let Some(qk) = qk else { candle_core::bail!("word-alignment attention is unavailable") };
     let (h, t, f_all) = qk.dims3()?;
-    let f = (seg_frames / 2).clamp(1, f_all);
+    if h == 0 || f_all == 0 || t != tokens.len() {
+        candle_core::bail!("invalid word-alignment attention dimensions");
+    }
+    let f = (seg_frames / 2).min(f_all);
     let qk = qk.narrow(2, 0, f)?.contiguous()?;
     let w = candle_nn::ops::softmax_last_dim(&qk)?;
     let w: Vec<Vec<Vec<f32>>> = w.to_vec3()?;
-    let rows = text.len() + 1;
+    // Keep the final prompt token as a leading non-word row, and EOT as the
+    // trailing row. DTW must consume the whole window: without the prompt row,
+    // all audio before the first spoken token is assigned to the first word.
+    let rows = text.len() + 2;
     let first = prompt.len() - 1;
+    if rows.checked_add(1).and_then(|r| f.checked_add(1).and_then(|c| r.checked_mul(c))).is_none_or(|cells| cells > 4_000_000) {
+        candle_core::bail!("word-alignment matrix is too large");
+    }
     let mut matrix = vec![0f32; rows * f];
     for head in w.iter().take(h) {
         // standardise over tokens for every frame
@@ -41,21 +56,24 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
         }
     }
     let neg: Vec<f32> = matrix.iter().map(|v| -v).collect();
-    let path = dtw(&neg, rows, f);
-    // the frame where each row is first reached
-    let mut jump = vec![usize::MAX; rows];
-    for &(i, j) in &path {
-        if jump[i] == usize::MAX {
-            jump[i] = j;
+    let out = token_bounds(&neg, text.len(), f)?;
+    Ok(out)
+}
+
+/// Costs include a leading prompt row, one row per text token and a trailing EOT row.
+fn token_bounds(cost: &[f32], tokens: usize, frames: usize) -> Result<Vec<(usize, usize)>> {
+    let Some(rows) = tokens.checked_add(2) else { candle_core::bail!("too many alignment tokens") };
+    let path = dtw(cost, rows, frames);
+    if path.is_empty() {
+        candle_core::bail!("invalid or oversized word-alignment matrix");
+    }
+    let mut jump = vec![frames; rows];
+    for (row, frame) in path {
+        if let Some(boundary) = jump.get_mut(row) {
+            *boundary = (*boundary).min(frame);
         }
     }
-    let mut out = Vec::with_capacity(text.len());
-    for i in 0..text.len() {
-        let s = jump[i].min(f);
-        let e = jump[i + 1].min(f).max(s);
-        out.push((s * 2, e * 2));
-    }
-    Ok(out)
+    Ok(jump.windows(2).skip(1).take(tokens).map(|pair| (pair[0] * 2, pair[1].max(pair[0]) * 2)).collect())
 }
 
 /// Median filter with reflect padding.
@@ -91,6 +109,12 @@ pub fn median_filter(x: &[f32], width: usize) -> Vec<f32> {
 /// Dynamic time warping through `cost` (`n × m`, row-major), monotonic steps (diagonal, down,
 /// right). Returns the path from (0, 0) to (n − 1, m − 1).
 pub fn dtw(cost: &[f32], n: usize, m: usize) -> Vec<(usize, usize)> {
+    // Attention windows are bounded (normally <= 226 × 1500). Reject malformed
+    // dimensions before allocating or indexing, including arithmetic overflow.
+    let cells = n.checked_add(1).and_then(|r| m.checked_add(1).and_then(|c| r.checked_mul(c)));
+    if n == 0 || m == 0 || n.checked_mul(m) != Some(cost.len()) || cells.is_none_or(|c| c > 4_000_000) || cost.iter().any(|c| !c.is_finite()) {
+        return Vec::new();
+    }
     let inf = f32::INFINITY;
     let mut acc = vec![inf; (n + 1) * (m + 1)];
     let mut trace = vec![0u8; (n + 1) * (m + 1)];
@@ -140,6 +164,35 @@ pub fn dtw(cost: &[f32], n: usize, m: usize) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_word_does_not_inherit_five_seconds_of_leading_audio() {
+        // Prompt consumes 0–5s (which may include noise), "It" occupies
+        // 5–5.2s, and EOT consumes the remaining audio. Units are 20ms.
+        let mut cost = vec![10.0; 3 * 300];
+        cost[..250].fill(-10.0);
+        cost[300 + 250..300 + 260].fill(-10.0);
+        cost[600 + 260..].fill(-10.0);
+        assert_eq!(token_bounds(&cost, 1, 300).unwrap(), vec![(500, 520)]);
+    }
+
+    #[test]
+    fn consecutive_tokens_keep_their_own_attention_boundaries() {
+        let mut cost = vec![10.0; 4 * 10];
+        cost[0] = -10.0; // prompt, no leading pause
+        cost[10..14].fill(-10.0); // first token at 0–80ms
+        cost[24..27].fill(-10.0); // second at 80–140ms
+        cost[37..40].fill(-10.0); // EOT
+        assert_eq!(token_bounds(&cost, 2, 10).unwrap(), vec![(0, 8), (8, 14)]);
+    }
+
+    #[test]
+    fn alignment_rejects_hostile_dimensions_without_panicking() {
+        for (cost, n, m) in [(vec![], 0, 0), (vec![0.0], usize::MAX, 1), (vec![0.0], 2, 3), (vec![f32::NAN], 1, 1)] {
+            assert!(dtw(&cost, n, m).is_empty());
+        }
+        assert!(token_bounds(&[], usize::MAX, 1).is_err());
+    }
 
     #[test]
     fn median_filter_removes_spikes() {

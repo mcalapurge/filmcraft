@@ -13,6 +13,11 @@ model handling: [docs/transcripts.md](../../docs/transcripts.md).
 Both features are off by default and are never enabled for wasm (`cargo xtask wasm` checks the
 crate without them).
 
+Word alignment retains a leading prompt row and a trailing end-of-text row in the
+attention path. Only text-token rows become word timings, so audio before the
+first word is not forced into that word. Energy-based trimming then removes
+quiet edges; timing remains an estimate (20 ms attention, 10 ms energy frames).
+
 ## References
 
 Implemented from the published description of the model: A. Radford et al., "Robust Speech
