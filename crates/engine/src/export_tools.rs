@@ -17,8 +17,11 @@
 //! - **Quick Export** (`export.quick`): the active sequence with a preset (the last one used,
 //!   initially Match Source – Adaptive High Bitrate) to a default path next to the project.
 //!
+//! - **Sequence.** Without `sequence`, exports use [`default_export_sequence`] (the active
+//!   sequence, else the first open one, else the first created); `export.sequences` lists them all.
+//!
 //! Commands: `export.presets.{list,get,save,delete,favorite,import,export}`, `export.formats`,
-//! `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
+//! `export.sequences`, `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
 use std::path::{Path, PathBuf};
@@ -333,8 +336,39 @@ pub fn sequence_param(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
             let id = ItemId(id);
             s.project.sequence(id).map(|_| id).ok_or_else(|| bad(cmd, "no such sequence"))
         }
-        None => s.state.active_sequence.ok_or(EngineError::NoSequence),
+        None => default_export_sequence(s).ok_or(EngineError::NoSequence),
     }
+}
+
+/// The sequence Export starts on: the active sequence, else the first open one, else the first
+/// created (the alphabetically first when the creation order ties, as in old projects).
+pub fn default_export_sequence(s: &Session) -> Option<ItemId> {
+    let is_seq = |id: &ItemId| s.project.sequence(*id).is_some();
+    s.state.active_sequence.filter(is_seq).or_else(|| s.state.open_sequences.iter().copied().find(is_seq)).or_else(|| {
+        s.project.sequences().min_by(|a, b| a.created.cmp(&b.created).then_with(|| name_order(&a.name, &b.name)).then(a.id.cmp(&b.id))).map(|i| i.id)
+    })
+}
+
+fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b))
+}
+
+/// Exports and the queue can name any sequence of the project, open or not.
+pub(crate) fn has_any_seq(s: &Session) -> std::result::Result<(), String> {
+    if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) }
+}
+
+/// Every sequence of the project, by name (what Export's Sequence menu lists).
+pub fn export_sequence_list(s: &Session) -> Vec<&filmcraft_project::ProjectItem> {
+    let mut all: Vec<_> = s.project.sequences().collect();
+    all.sort_by(|a, b| name_order(&a.name, &b.name).then(a.id.cmp(&b.id)));
+    all
+}
+
+/// `export.sequences`: every sequence of the project by name, and the one Export starts on.
+fn sequences(s: &mut Session, _: &Value) -> Result<Value> {
+    let list: Vec<Value> = export_sequence_list(s).iter().map(|i| json!({"id": i.id.0, "name": i.name, "created": i.created})).collect();
+    Ok(json!({"sequences": list, "default": default_export_sequence(s).map(|i| i.0)}))
 }
 
 /// Export ▸ Range: `entire` | `inOut` | `workArea` | `custom` (`start…` / `end…` times).
@@ -758,6 +792,12 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             // several ranges of one sequence get numbered names; several sequences their own names
             let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !is_folder(&expand_home(x)))) { Some(n) } else { None };
             st.path = output_path(s, p, seq, &st, suffix);
+            // sequences of the same name into one folder: number the later ones, not overwrite
+            let mut k = 1usize;
+            while items.iter().any(|(_, o): &(ItemId, ExportSettings)| o.path == st.path) && k < 10_000 {
+                st.path = output_path(s, p, seq, &st, Some(k));
+                k += 1;
+            }
             n += 1;
             items.push((seq, st));
         }
@@ -1156,12 +1196,13 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.presets.import", "Import Export Presets", r#"{"path":str}"#, always, presets_import, true),
         spec("export.presets.export", "Export Export Presets", r#"{"path":str,"names":[str]?}"#, always, presets_export, false),
         spec("export.formats", "List Export Formats", "{}", always, formats, false),
-        spec("export.resolve", "Resolve Export Settings", "{…settings params, \"path\":str?}", has_seq, resolve, false),
+        spec("export.sequences", "List Exportable Sequences", "{}", always, sequences, false),
+        spec("export.resolve", "Resolve Export Settings", "{…settings params, \"path\":str?,\"sequence\":id?}", has_any_seq, resolve, false),
         spec(
             "export.queue.add",
             "Send to Export Queue",
-            r#"{…settings params,"path":str|dir?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?}"#,
-            has_seq,
+            r#"{…settings params,"path":str|dir?,"sequence":id?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?}"#,
+            has_any_seq,
             queue_add,
             true,
         ),

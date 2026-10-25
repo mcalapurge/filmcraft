@@ -2881,6 +2881,7 @@
 	Cleared {n} shortcut(s) of {command}	{n} atalho(s) de {command} removido(s)
 	No export preset named `{name}`	Nenhuma predefinição de exportação chamada `{name}`
 	Open a sequence to export	Abra uma sequência para exportar
+	Create a sequence to export	Crie uma sequência para exportar
 	Destinations	Destinos
 	Media File	Arquivo de mídia
 	Queue ({n})	Fila ({n})
@@ -2951,6 +2952,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sequência, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Tamanho estimado do arquivo: {size}
 	Send to Queue	Enviar para a fila
+	Queue All	Enfileirar tudo
+	Custom (the settings shown)	Personalizado (as configurações exibidas)
+	the entire sequence	a sequência inteira
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	a entrada/saída de cada sequência, senão ela inteira (um intervalo personalizado ou área de trabalho pertence a uma só sequência)
+	Adds all {n} sequences to the export queue:	Adiciona todas as {n} sequências à fila de exportação:
+	• File name: each sequence's own name (numbered when names repeat)	• Nome do arquivo: o de cada sequência (numerado se repetir)
+	• Location: {location}	• Local: {location}
+	• Preset: {preset}	• Predefinição: {preset}
+	• Range: {range}	• Intervalo: {range}
+	Added {n} sequences to the export queue	{n} sequências adicionadas à fila de exportação
 	Exporting {path}	Exportando {path}
 	Added to the export queue	Adicionado à fila de exportação
 	Preset Manager	Gerenciador de predefinições

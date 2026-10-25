@@ -2894,6 +2894,7 @@
 	Cleared {n} shortcut(s) of {command}	{n} Tastenkürzel von {command} entfernt
 	No export preset named `{name}`	Keine Exportvorgabe namens `{name}`
 	Open a sequence to export	Öffne eine Sequenz, um sie zu exportieren
+	Create a sequence to export	Erstelle eine Sequenz, um sie zu exportieren
 	Destinations	Ziele
 	Media File	Mediendatei
 	Queue ({n})	Warteschlange ({n})
@@ -2964,6 +2965,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sequenz, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Geschätzte Dateigröße: {size}
 	Send to Queue	An Warteschlange senden
+	Queue All	Alle einreihen
+	Custom (the settings shown)	Benutzerdefiniert (die angezeigten Einstellungen)
+	the entire sequence	die gesamte Sequenz
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	In/Out jeder Sequenz, sonst die ganze Sequenz (ein eigener Bereich oder Arbeitsbereich gehört zu einer Sequenz)
+	Adds all {n} sequences to the export queue:	Fügt alle {n} Sequenzen zur Export-Warteschlange hinzu:
+	• File name: each sequence's own name (numbered when names repeat)	• Dateiname: der Name jeder Sequenz (nummeriert bei gleichen Namen)
+	• Location: {location}	• Speicherort: {location}
+	• Preset: {preset}	• Vorgabe: {preset}
+	• Range: {range}	• Bereich: {range}
+	Added {n} sequences to the export queue	{n} Sequenzen zur Export-Warteschlange hinzugefügt
 	Exporting {path}	{path} wird exportiert
 	Added to the export queue	Zur Exportwarteschlange hinzugefügt
 	Preset Manager	Vorgabenmanager

@@ -7,10 +7,10 @@ use super::*;
 
 pub(crate) const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Source In/Out"), ("workArea", "Work Area"), ("custom", "Custom")];
 
-pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: filmcraft_engine::project::ItemId) {
+pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: ItemId) {
     let t = app.tokens;
     let mut reg = Reg::default();
-    let Some(q) = app.session.active_sequence().cloned() else { return };
+    let Some(q) = app.session.project.sequence(seq_id).cloned() else { return };
     let rate = q.settings.frame_rate;
     // preview (aspect of the output frame)
     let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, q.settings.sample_rate);
@@ -18,7 +18,8 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let pic = crate::panels::monitor::fit(pv_area, r.width as f32, r.height as f32);
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
     if app.ui.export.settings.has_video() {
-        let frame = rate.frame_at(app.session.playhead());
+        // the sequence's own playhead (it need not be the active one)
+        let frame = rate.frame_at(app.session.state.playheads.get(&seq_id).copied().unwrap_or_default());
         let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
         let project = app.session.project.clone();
         app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
@@ -126,6 +127,41 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
+    // Queue All: every sequence at once, when there is more than one
+    let multi = app.session.project.sequences().nth(1).is_some();
+    if !multi {
+        app.ui.export.queue_all_info = false;
+    }
+    let all = multi.then(|| {
+        let r = Rect::from_min_size(pos2(queue.min.x - 106.0, go.min.y), vec2(96.0, 30.0));
+        let resp = ui.interact(r, egui::Id::unique("export-queue-all"), Sense::click());
+        ui.painter().rect_stroke(r, 15.0, egui::Stroke::new(1.0, if resp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Queue All"), Tokens::semibold(12.5), t.text);
+        reg.add("export.queueAll", r, "Queue All");
+        // a circled ? that opens what Queue All will use: left of the button, or above it when
+        // the column is too narrow
+        let mut info = Rect::from_center_size(pos2(r.min.x - 14.0, r.center().y), vec2(18.0, 18.0));
+        if info.min.x < rect.min.x + 4.0 {
+            info = Rect::from_center_size(pos2(r.min.x + 9.0, r.min.y - 14.0), vec2(18.0, 18.0));
+        }
+        let iresp = ui.interact(info, egui::Id::unique("export-queue-all-info"), Sense::click());
+        let open = app.ui.export.queue_all_info;
+        let col = if iresp.hovered() || open { t.text } else { t.text_dim };
+        if open {
+            ui.painter().circle_filled(info.center(), 8.0, t.field_bg);
+        }
+        ui.painter().circle_stroke(info.center(), 8.0, egui::Stroke::new(1.0, col));
+        ui.painter().text(info.center(), Align2::CENTER_CENTER, "?", Tokens::semibold(11.5), col);
+        reg.add("export.queueAll.info", info, "Queue All details");
+        let toggled = iresp.clicked();
+        if toggled {
+            app.ui.export.queue_all_info = !open;
+        }
+        if app.ui.export.queue_all_info {
+            queue_all_details(app, ui.ctx(), &mut reg, info, toggled);
+        }
+        resp
+    });
     let resp = ui.interact(go, egui::Id::unique("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
@@ -148,6 +184,40 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
             Err(e) => app.ui.status = e.to_string(),
         }
+    }
+    if all.is_some_and(|r| r.clicked()) {
+        match app.session.execute("export.queue.add", queue_all_params(app)) {
+            Ok(v) => {
+                let n = v["added"].as_array().map_or(0, Vec::len);
+                app.ui.status = tlf!("Added {n} sequences to the export queue", n);
+            }
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
+}
+
+/// The Queue All details panel, above the ⓘ at `info`; Escape or a click elsewhere closes it.
+fn queue_all_details(app: &mut FilmcraftApp, ctx: &egui::Context, reg: &mut Reg, info: Rect, toggled: bool) {
+    let t = app.tokens;
+    let help = queue_all_help(app);
+    let area = egui::Area::new(egui::Id::unique("export-queue-all-details"))
+        .order(egui::Order::Foreground)
+        .pivot(Align2::LEFT_BOTTOM)
+        .fixed_pos(pos2(info.min.x, info.min.y - 6.0))
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width(340.0);
+                ui.label(egui::RichText::new(tl!("Queue All")).strong().size(13.0));
+                ui.add_space(2.0);
+                for line in help.lines() {
+                    ui.label(egui::RichText::new(line).size(11.5).color(t.text));
+                }
+            });
+        });
+    reg.add("export.queueAll.details", area.response.rect, help);
+    if crate::widgets::escape_closes(ctx) || (area.response.clicked_elsewhere() && !toggled) {
+        app.ui.export.queue_all_info = false;
     }
 }
 

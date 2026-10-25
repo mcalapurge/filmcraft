@@ -360,4 +360,13 @@
 	Zoom Out	Зменшити
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
-
+	Queue All	Усе в чергу
+	Custom (the settings shown)	Власний (показані налаштування)
+	the entire sequence	уся секвенція
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	точки входу/виходу кожної секвенції, інакше вся секвенція (власний діапазон чи робоча область належать одній секвенції)
+	Adds all {n} sequences to the export queue:	Додає всі секвенції ({n}) до черги експорту:
+	• File name: each sequence's own name (numbered when names repeat)	• Назва файлу: назва кожної секвенції (з номером, якщо повторюється)
+	• Location: {location}	• Розташування: {location}
+	• Preset: {preset}	• Набір налаштувань: {preset}
+	• Range: {range}	• Діапазон: {range}
+	Added {n} sequences to the export queue	До черги експорту додано секвенцій: {n}

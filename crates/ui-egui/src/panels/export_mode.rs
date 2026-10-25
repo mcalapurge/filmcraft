@@ -8,10 +8,17 @@
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
+//! The Sequence menu lists every sequence of the project; it starts on the active sequence (else
+//! the first open one, else the first created, see
+//! [`filmcraft_engine::export_tools::default_export_sequence`]) and goes back to it whenever the
+//! active sequence changes.
+//!
+//! Automation ids: `export.sequence` (options `export.sequence.<item id>`), `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
-//! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
+//! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.queueAll` and its
+//! `export.queueAll.info` ⓘ, which toggles `export.queueAll.details` (shown with two or more
+//! sequences), `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
@@ -29,6 +36,8 @@ use filmcraft_engine::export::{
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use filmcraft_engine::project::ItemId;
 
 use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
@@ -71,10 +80,16 @@ pub struct ExportUi {
     pub open_sections: Vec<String>,
     /// The sequence the file name was taken from.
     pub for_sequence: Option<u64>,
+    /// The sequence to export or queue (None or a deleted one = the default).
+    pub sequence: Option<u64>,
+    /// The active sequence `sequence` was chosen under; a new active sequence resets the choice.
+    pub sequence_follows: Option<u64>,
     /// Preset Manager (None = closed).
     pub manager: Option<PresetManager>,
     /// Quick Export popup.
     pub quick_open: bool,
+    /// The Queue All details, opened with the ⓘ next to the button.
+    pub queue_all_info: bool,
     pub quick_path: String,
     pub quick_preset: String,
 }
@@ -92,8 +107,11 @@ impl Default for ExportUi {
             custom_end: 10.0,
             open_sections: vec!["video".into(), "audio".into()],
             for_sequence: None,
+            sequence: None,
+            sequence_follows: None,
             manager: None,
             quick_open: false,
+            queue_all_info: false,
             quick_path: String::new(),
             quick_preset: String::new(),
         }
@@ -154,10 +172,28 @@ pub fn output_path(ex: &ExportUi) -> String {
     if dir.is_empty() { file } else { std::path::Path::new(&dir).join(file).to_string_lossy().to_string() }
 }
 
+/// The sequence Export works on: the one picked in the Sequence menu while it still exists and
+/// the active sequence has not changed since, else the default.
+pub fn export_sequence(app: &mut FilmcraftApp) -> Option<ItemId> {
+    let active = app.session.state.active_sequence.map(|i| i.0);
+    let ex = &mut app.ui.export;
+    if ex.sequence_follows != active {
+        ex.sequence = None;
+        ex.sequence_follows = active;
+    }
+    let picked = ex.sequence.map(ItemId).filter(|id| app.session.project.sequence(*id).is_some());
+    let seq = picked.or_else(|| filmcraft_engine::export_tools::default_export_sequence(&app.session));
+    app.ui.export.sequence = seq.map(|i| i.0);
+    seq
+}
+
 /// Engine params for the current settings (`file.exportMedia` / `export.queue.add`).
 pub fn export_params(app: &FilmcraftApp) -> Value {
     let ex = &app.ui.export;
     let mut p = json!({"path": output_path(ex), "settings": settings_json(&ex.settings), "range": ex.range});
+    if let Some(seq) = ex.sequence {
+        p["sequence"] = json!(seq);
+    }
     if ex.range == "custom" {
         p["startSeconds"] = json!(ex.custom_start);
         p["endSeconds"] = json!(ex.custom_end);
@@ -165,8 +201,50 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
     p
 }
 
-fn sync_sequence(app: &mut FilmcraftApp) {
-    let Some(seq) = app.session.state.active_sequence else { return };
+/// Engine params for Queue All: every sequence, each named after itself, into the chosen folder
+/// with the current settings. Entire stays entire; any other range (a custom span or work area
+/// belongs to one timeline) becomes each sequence's own In/Out, else the whole of it.
+pub fn queue_all_params(app: &FilmcraftApp) -> Value {
+    let ex = &app.ui.export;
+    let dir = match filmcraft_engine::export_tools::expand_home(ex.location.trim()) {
+        d if d.is_empty() => filmcraft_engine::export_tools::default_export_dir(&app.session).to_string_lossy().to_string(),
+        d => d,
+    };
+    let folder = if dir.ends_with(['/', '\\']) { dir } else { format!("{dir}{}", std::path::MAIN_SEPARATOR) };
+    let ids: Vec<u64> = filmcraft_engine::export_tools::export_sequence_list(&app.session).iter().map(|i| i.id.0).collect();
+    let mut p = json!({"path": folder, "settings": settings_json(&ex.settings), "sequences": ids});
+    if ex.range == "entire" {
+        p["range"] = json!("entire");
+    }
+    if ex.preset != CUSTOM {
+        p["preset"] = json!(ex.preset);
+    }
+    p
+}
+
+/// What Queue All will do with the current settings (shown by the ⓘ next to it).
+fn queue_all_help(app: &FilmcraftApp) -> String {
+    let p = queue_all_params(app);
+    let n = p["sequences"].as_array().map_or(0, Vec::len);
+    let location = p["path"].as_str().unwrap_or("").to_string();
+    let preset =
+        if app.ui.export.preset == CUSTOM { tl!("Custom (the settings shown)").to_string() } else { crate::i18n::t(&app.ui.export.preset).to_string() };
+    let range = if app.ui.export.range == "entire" {
+        tl!("the entire sequence").to_string()
+    } else {
+        tl!("each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)").to_string()
+    };
+    [
+        tlf!("Adds all {n} sequences to the export queue:", n),
+        tl!("• File name: each sequence's own name (numbered when names repeat)").to_string(),
+        tlf!("• Location: {location}", location),
+        tlf!("• Preset: {preset}", preset),
+        tlf!("• Range: {range}", range),
+    ]
+    .join("\n")
+}
+
+fn sync_sequence(app: &mut FilmcraftApp, seq: ItemId) {
     if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {
         app.ui.export.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
         app.ui.export.for_sequence = Some(seq.0);
@@ -184,15 +262,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for r in [left, mid, right] {
         ui.painter().rect_filled(r, t.radius, t.panel_bg);
     }
-    let Some(seq_id) = app.session.state.active_sequence else {
-        crate::dock::placeholder(ui, mid, &t, tl!("Open a sequence to export"));
+    let Some(seq_id) = export_sequence(app) else {
+        crate::dock::placeholder(ui, mid, &t, tl!("Create a sequence to export"));
         queue_column(app, ui, left);
         return;
     };
-    sync_sequence(app);
+    sync_sequence(app, seq_id);
     let before = settings_json(&app.ui.export.settings);
     queue_column(app, ui, left);
-    settings_column(app, ui, mid);
+    settings_column(app, ui, mid, seq_id);
     preview_column(app, ui, right, seq_id);
     // editing any setting turns the preset into "Custom"
     if settings_json(&app.ui.export.settings) != before

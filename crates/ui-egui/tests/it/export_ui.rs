@@ -310,6 +310,107 @@ fn preset_manager_search_favourite_save_apply() {
     assert!(d.app().ui.export.manager.is_none());
 }
 
+/// The Sequence menu starts on the active sequence, picks any other for Export / Send to Queue,
+/// goes back to the active one when that changes, and works with no sequence open.
+#[test]
+fn export_sequence_menu_picks_what_to_export() {
+    let mut d = Driver::new("sequence");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let main = d.app().session.state.active_sequence.unwrap().0;
+    let main_name = d.app().session.project.item(filmcraft_engine::project::ItemId(main)).unwrap().name.clone();
+    d.exec("file.newSequence", json!({"name": "Other Cut"}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    let other = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(d.app().ui.export.sequence, Some(other), "starts on the active sequence");
+    assert_eq!(d.app().ui.export.file_name, "Other Cut");
+    // pick the first sequence from the menu: the file name follows and the queue gets it
+    d.click("export.sequence");
+    d.click(&format!("export.sequence.{main}"));
+    assert_eq!(d.app().ui.export.sequence, Some(main));
+    assert_eq!(d.app().ui.export.file_name, main_name);
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "location": loc, "range": "custom", "customStart": 0.0, "customEnd": 0.25}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert_eq!(d.queue().last().unwrap()["sequenceName"], json!(main_name));
+    // the agent route: ui.set picks it too
+    d.ok("ui.set", json!({"export": {"sequence": other}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert_eq!(d.queue().last().unwrap()["sequenceName"], "Other Cut");
+    // a newly active sequence resets the choice to it
+    d.ok("ui.set", json!({"export": {"sequence": main}}));
+    d.exec("file.newSequence", json!({"name": "Third"}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    let third = d.app().session.state.active_sequence.unwrap().0;
+    assert_eq!(d.app().ui.export.sequence, Some(third));
+    // nothing open: the default sequence, and it still exports
+    d.app().session.state.active_sequence = None;
+    d.app().session.state.open_sequences.clear();
+    d.frames(3);
+    let default = filmcraft_engine::export_tools::default_export_sequence(&d.app().session).map(|i| i.0);
+    assert!(default.is_some());
+    assert_eq!(d.app().ui.export.sequence, default);
+    assert!(d.has("export.sequence") && d.has("export.sendToQueue"));
+    d.click("export.sendToQueue");
+    assert_eq!(d.queue().len(), 3);
+    // a deleted pick falls back to the default
+    d.ok("ui.set", json!({"export": {"sequence": 999_999}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.sequence, default);
+}
+
+/// Queue All (two or more sequences): every sequence, named after itself, into the chosen folder
+/// with the chosen preset; gone once only one sequence is left.
+#[test]
+fn queue_all_sends_every_sequence_with_its_own_name() {
+    let mut d = Driver::new("queue-all");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.exec("file.newSequence", json!({"name": "Promo"}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.path("renders");
+    std::fs::create_dir_all(&loc).unwrap();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "location": loc, "fileName": "ignored", "range": "custom", "customStart": 0.0, "customEnd": 0.25}}));
+    d.frames(3);
+    assert!(d.has("export.queueAll"));
+    // the ⓘ opens what Queue All will use on a click (not on hover), and closes again
+    assert!(d.has("export.queueAll.info") && !d.has("export.queueAll.details"));
+    d.click("export.queueAll.info");
+    assert!(d.app().ui.export.queue_all_info);
+    let els = d.ok("ui.elements", json!({"prefix": "export.queueAll.details"}));
+    let help =
+        els.as_array().unwrap().iter().find(|e| e["id"] == "export.queueAll.details").expect("the details panel")["label"].as_str().unwrap_or("").to_string();
+    assert!(help.contains(&loc) && help.contains("Waveform Audio 48 kHz 16-bit") && help.contains("In/Out"), "{help}");
+    d.snapshot("export-queue-all");
+    d.click("export.queueAll.info");
+    assert!(!d.app().ui.export.queue_all_info && !d.has("export.queueAll.details"), "a second click closes it");
+    d.click("export.queueAll.info");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+    assert!(!d.app().ui.export.queue_all_info, "Escape closes it");
+    d.click("export.queueAll");
+    let mut names: Vec<String> = d.app().session.project.sequences().map(|i| format!("{}.wav", filmcraft_engine::export_tools::file_safe(&i.name))).collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    let q = d.queue();
+    assert_eq!(q.len(), names.len());
+    for it in &q {
+        assert_eq!(it["preset"], "Waveform Audio 48 kHz 16-bit");
+        assert_eq!(Path::new(it["path"].as_str().unwrap()).parent().unwrap(), Path::new(&loc));
+    }
+    let got: Vec<String> = q.iter().map(|i| Path::new(i["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert_eq!(got, names, "each sequence keeps its own name, not the File Name field");
+    // a single sequence: no Queue All
+    let keep = d.app().session.state.active_sequence.unwrap().0;
+    let others: Vec<u64> = d.app().session.project.sequences().map(|i| i.id.0).filter(|id| *id != keep).collect();
+    d.exec("project.delete", json!({"items": others}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    assert!(!d.has("export.queueAll"));
+    assert!(d.has("export.sendToQueue"));
+}
+
 #[test]
 fn queue_panel_send_reorder_cancel_start_retry() {
     let mut d = Driver::new("queue");

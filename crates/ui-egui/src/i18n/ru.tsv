@@ -360,4 +360,13 @@
 	Zoom to Sequence	Масштабировать по размеру эпизода
 	Next Appearance Mode	Следующий режим оформления
 	Project Notes	Заметки проекта
-
+	Queue All	Всё в очередь
+	Custom (the settings shown)	Пользовательский (показанные настройки)
+	the entire sequence	весь эпизод
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	точки входа/выхода каждого эпизода, иначе весь эпизод (свой диапазон или рабочая область относятся к одному эпизоду)
+	Adds all {n} sequences to the export queue:	Добавляет все эпизоды ({n}) в очередь экспорта:
+	• File name: each sequence's own name (numbered when names repeat)	• Имя файла: имя каждого эпизода (с номером при совпадении)
+	• Location: {location}	• Расположение: {location}
+	• Preset: {preset}	• Набор настроек: {preset}
+	• Range: {range}	• Диапазон: {range}
+	Added {n} sequences to the export queue	В очередь экспорта добавлено эпизодов: {n}

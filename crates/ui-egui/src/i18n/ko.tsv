@@ -2147,6 +2147,7 @@
 	Opacity 100 → 0 % over the last second	마지막 1초 동안 불투명도 100 → 0 %
 	Open	열기
 	Open a sequence to export	내보낼 시퀀스를 여세요
+	Create a sequence to export	내보낼 시퀀스를 만드세요
 	Open a sequence to see its transcript	기록을 보려면 시퀀스를 여세요
 	Open a sequence to work with captions	자막 작업을 하려면 시퀀스를 여세요
 	Open Air	야외
@@ -2746,6 +2747,16 @@
 	Send exports here with Send to Queue, then start the queue.	대기열로 보내기로 내보내기를 추가한 뒤 대기열을 시작하세요.
 	Send to Back	맨 뒤로 보내기
 	Send to Queue	대기열로 보내기
+	Queue All	모두 대기열에 추가
+	Custom (the settings shown)	사용자 지정(표시된 설정)
+	the entire sequence	시퀀스 전체
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	각 시퀀스의 인/아웃, 없으면 전체(사용자 지정 범위나 작업 영역은 한 시퀀스에만 해당)
+	Adds all {n} sequences to the export queue:	시퀀스 {n}개 모두를 내보내기 대기열에 추가합니다:
+	• File name: each sequence's own name (numbered when names repeat)	• 파일 이름: 각 시퀀스의 이름(중복되면 번호 추가)
+	• Location: {location}	• 위치: {location}
+	• Preset: {preset}	• 사전 설정: {preset}
+	• Range: {range}	• 범위: {range}
+	Added {n} sequences to the export queue	시퀀스 {n}개를 내보내기 대기열에 추가했습니다
 	Send {n} Level	보내기 {n} 레벨
 	Sensitivity	감도
 	Sensitivity:	감도:

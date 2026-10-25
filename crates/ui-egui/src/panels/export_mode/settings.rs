@@ -210,19 +210,21 @@ pub(crate) const PARS: [(&str, Option<(u32, u32)>); 6] = [
     ("Anamorphic 2:1 (2.0)", Some((2, 1))),
 ];
 
-pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: ItemId) {
     let t = app.tokens;
     let mut reg = Reg::default();
     let mut open_manager = false;
     let mut chosen_preset: Option<String> = None;
-    let (seq_w, seq_h, seq_rate, seq_sr) = app
-        .session
-        .active_sequence()
-        .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
-        .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
-    let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
+    let project = app.session.project.clone();
+    let seq = project.sequence(seq_id);
+    let (seq_w, seq_h, seq_rate, seq_sr) =
+        seq.map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate)).unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
+    let has_captions = seq.is_some_and(|q| !q.caption_tracks.is_empty());
     // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
-    let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
+    let seq_hdr = seq.is_some_and(|q| q.settings.color.working.is_hdr());
+    let sequences: Vec<(ItemId, String)> =
+        filmcraft_engine::export_tools::export_sequence_list(&app.session).into_iter().map(|i| (i.id, i.name.clone())).collect();
+    let mut chosen_sequence: Option<ItemId> = None;
     let all_presets = app.session.export_presets.all();
     let favs: Vec<String> = all_presets.iter().filter(|p| app.session.export_presets.is_favorite(&p.name)).map(|p| p.name.clone()).collect();
     let mut pick_folder = false;
@@ -232,6 +234,20 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
         ui.add_space(6.0);
+        // names are the user's own: shown as typed, not translated
+        row(ui, &t, tl!("Sequence"), |ui| {
+            let current = sequences.iter().find(|(id, _)| *id == seq_id).map(|(_, n)| n.as_str()).unwrap_or("");
+            let r = craft_ui::ComboBox::from_id_salt("export.sequence").selected_text(current).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                for (id, name) in &sequences {
+                    let resp = ui.selectable_label(*id == seq_id, name);
+                    reg.add(format!("export.sequence.{}", id.0), resp.rect, name.clone());
+                    if resp.clicked() {
+                        chosen_sequence = Some(*id);
+                    }
+                }
+            });
+            reg.add("export.sequence", r.response.rect, current);
+        });
         row(ui, &t, tl!("File Name"), |ui| {
             if let Some(v) = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")) {
                 ex.file_name = v;
@@ -381,6 +397,9 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
         }
         let _ = seq_rate;
     });
+    if let Some(id) = chosen_sequence {
+        app.ui.export.sequence = Some(id.0);
+    }
     if let Some(name) = chosen_preset {
         apply_preset(app, &name);
     }

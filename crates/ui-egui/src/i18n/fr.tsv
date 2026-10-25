@@ -2879,6 +2879,7 @@
 	Cleared {n} shortcut(s) of {command}	{n} raccourci(s) de {command} effacé(s)
 	No export preset named `{name}`	Aucun préréglage d'exportation nommé `{name}`
 	Open a sequence to export	Ouvrez une séquence à exporter
+	Create a sequence to export	Créez une séquence à exporter
 	Destinations	Destinations
 	Media File	Fichier média
 	Queue ({n})	File d'attente ({n})
@@ -2949,6 +2950,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Séquence, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Taille de fichier estimée : {size}
 	Send to Queue	Envoyer vers la file d'attente
+	Queue All	Tout mettre en file
+	Custom (the settings shown)	Personnalisé (les réglages affichés)
+	the entire sequence	la séquence entière
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	l'entrée/sortie de chaque séquence, sinon toute la séquence (une plage personnalisée ou zone de travail appartient à une seule séquence)
+	Adds all {n} sequences to the export queue:	Ajoute les {n} séquences à la file d’exportation :
+	• File name: each sequence's own name (numbered when names repeat)	• Nom de fichier : celui de chaque séquence (numéroté en cas de doublon)
+	• Location: {location}	• Emplacement : {location}
+	• Preset: {preset}	• Préréglage : {preset}
+	• Range: {range}	• Plage : {range}
+	Added {n} sequences to the export queue	{n} séquences ajoutées à la file d’exportation
 	Exporting {path}	Exportation de {path}
 	Added to the export queue	Ajouté à la file d'attente d'exportation
 	Preset Manager	Gestionnaire de préréglages
