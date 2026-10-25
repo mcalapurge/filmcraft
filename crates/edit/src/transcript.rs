@@ -426,6 +426,15 @@ impl Default for LiveCaptionRules {
     }
 }
 
+/// When a spoken word is taken to end: alignment stretches a word over any silence before the
+/// next one, so a word is capped at 0.12 s per character (at least 0.4 s) from its start, which
+/// keeps a caption from lingering over a pause or the end of speech.
+fn spoken_end(w: &SeqWord) -> Tick {
+    let chars = i64::try_from(w.text.chars().count()).unwrap_or(i64::MAX).min(100);
+    let cap = (TICKS_PER_SECOND * 12 / 100).saturating_mul(chars).max(TICKS_PER_SECOND * 2 / 5);
+    w.end.min(Tick(w.start.0.saturating_add(cap))).max(w.start)
+}
+
 /// Group words into live caption blocks of at most `max_words` words and `max_chars`
 /// characters, that `fits` says draw on one line (the caller measures them in the track's font
 /// and frame, so long words mean fewer words per caption and a word too long for any line gets a
@@ -473,8 +482,9 @@ pub fn live_caption_blocks(words: &[SeqWord], rules: &LiveCaptionRules, rate: Fr
             start -= fd;
         }
         let start = start.max(Tick::ZERO);
-        let mut end = rate.snap(last.end);
-        if end < last.end {
+        let last_end = spoken_end(last);
+        let mut end = rate.snap(last_end);
+        if end < last_end {
             end += fd;
         }
         let text = words[g.clone()].iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
@@ -521,7 +531,7 @@ pub fn live_blocks_to_captions(blocks: &[CaptionBlock], words: &[SeqWord], ctx: 
                     .get(b.words.clone())
                     .unwrap_or_default()
                     .iter()
-                    .map(|w| filmcraft_project::CaptionWord { text: w.text.clone(), start: w.start - b.start, end: w.end - b.start })
+                    .map(|w| filmcraft_project::CaptionWord { text: w.text.clone(), start: w.start - b.start, end: spoken_end(w) - b.start })
                     .collect(),
             };
             c.clamp_words();
