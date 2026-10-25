@@ -13,10 +13,11 @@ model handling: [docs/transcripts.md](../../docs/transcripts.md).
 Both features are off by default and are never enabled for wasm (`cargo xtask wasm` checks the
 crate without them).
 
-Word alignment retains a leading prompt row and a trailing end-of-text row in the
-attention path. Only text-token rows become word timings, so audio before the
-first word is not forced into that word. Energy-based trimming then removes
-quiet edges; timing remains an estimate (20 ms attention, 10 ms energy frames).
+Word alignment follows the published procedure: the decoder row of each input token attends to
+the audio of the token it predicts, so a token's time is read from the row before it (the final
+prompt token's row for the first word); a trailing end-of-text row takes the audio after the last
+word. Energy-based trimming then removes quiet edges, including audio before the first word;
+timing remains an estimate (20 ms attention, 10 ms energy frames).
 
 ## References
 

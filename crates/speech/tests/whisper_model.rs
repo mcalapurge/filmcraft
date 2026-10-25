@@ -91,3 +91,55 @@ fn tiny_model_transcribes_public_domain_speech() {
     eprintln!("whisper-tiny WER {:.1}% over {words} words", wer * 100.0);
     assert!(wer < 0.25, "WER {wer}");
 }
+
+/// Word timing against samples that carry true word bounds in `<name>.words` (one
+/// `start end word` line per word, seconds). Make them by synthesising each word on its own and
+/// joining them with known pauses (`docs/transcripts.md` ▸ Testing). Guards against alignment
+/// that shifts every word (it once put each word on the next one's audio, 0.3 s late).
+#[test]
+fn word_times_match_the_reference_bounds() {
+    let Some((id, dir)) = ["whisper-base", "whisper-tiny", "whisper-small"].into_iter().find_map(|id| model_dir(id).map(|d| (id, d))) else {
+        eprintln!("SKIPPED: no Whisper weights found (see the test's module docs)");
+        return;
+    };
+    let timed: Vec<(PathBuf, Vec<(f64, f64, String)>)> = samples()
+        .into_iter()
+        .filter_map(|(p, _)| {
+            let truth = std::fs::read_to_string(p.with_extension("words")).ok()?;
+            let words = truth
+                .lines()
+                .filter_map(|l| {
+                    let mut f = l.split_whitespace();
+                    Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?, filmcraft_project::transcript::normalize_word(f.next()?)))
+                })
+                .collect();
+            Some((p, words))
+        })
+        .collect();
+    if timed.is_empty() {
+        eprintln!("SKIPPED: no samples with `.words` timings in target/fixtures/speech");
+        return;
+    }
+    let w = filmcraft_speech::whisper::Whisper::load(&dir, id).unwrap();
+    let opts = Options { language: Some("en".into()), diarize: false, ..Default::default() };
+    let secs = |t: filmcraft_time::Tick| t.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+    let (mut start_err, mut end_err) = (Vec::new(), Vec::new());
+    for (p, truth) in &timed {
+        let t = w.transcribe(&read_f32(p), &opts, &mut |_, _| true).unwrap();
+        // pair words in order by text, skipping misrecognised ones
+        let mut hyp = t.words.iter().peekable();
+        for (s, e, text) in truth {
+            let Some(h) = hyp.clone().position(|h| h.normalized() == *text).and_then(|k| hyp.nth(k)) else { continue };
+            start_err.push(secs(h.start) - s);
+            end_err.push(secs(h.end) - e);
+        }
+    }
+    let n = start_err.len().max(1) as f64;
+    let mean_start = start_err.iter().sum::<f64>() / n;
+    let end_mae = end_err.iter().map(|x| x.abs()).sum::<f64>() / n;
+    eprintln!("{id}: {} words, mean start error {mean_start:+.3}s, end MAE {end_mae:.3}s", start_err.len());
+    assert!(start_err.len() * 2 >= timed.iter().map(|t| t.1.len()).sum::<usize>(), "too few words recognised");
+    // words never start late on average (captions would trail the speech) and end near the truth
+    assert!(mean_start <= 0.1, "words start {mean_start:+.3}s late on average");
+    assert!(end_mae <= 0.25, "word ends are off by {end_mae:.3}s on average");
+}

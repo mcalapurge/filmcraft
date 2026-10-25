@@ -28,9 +28,10 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
     let qk = qk.narrow(2, 0, f)?.contiguous()?;
     let w = candle_nn::ops::softmax_last_dim(&qk)?;
     let w: Vec<Vec<Vec<f32>>> = w.to_vec3()?;
-    // Keep the final prompt token as a leading non-word row, and EOT as the
-    // trailing row. DTW must consume the whole window: without the prompt row,
-    // all audio before the first spoken token is assigned to the first word.
+    // The decoder row of input token i attends to the audio of the token it predicts (i + 1),
+    // so token k's audio is where the path runs through the row before it: the final prompt
+    // token's row for the first text token, and so on. The trailing EOT row takes the audio
+    // after the last word, so the last word ends where speech does.
     let rows = text.len() + 2;
     let first = prompt.len() - 1;
     if rows.checked_add(1).and_then(|r| f.checked_add(1).and_then(|c| r.checked_mul(c))).is_none_or(|cells| cells > 4_000_000) {
@@ -60,7 +61,8 @@ pub fn align(m: &mut Model, xa: &Tensor, prompt: &[u32], text: &[u32], eot: u32,
     Ok(out)
 }
 
-/// Costs include a leading prompt row, one row per text token and a trailing EOT row.
+/// Costs include a leading prompt row, one row per text token and a trailing EOT row. Token k
+/// spans the frames where the path enters row k (the row that predicts it) up to row k + 1.
 fn token_bounds(cost: &[f32], tokens: usize, frames: usize) -> Result<Vec<(usize, usize)>> {
     let Some(rows) = tokens.checked_add(2) else { candle_core::bail!("too many alignment tokens") };
     let path = dtw(cost, rows, frames);
@@ -73,7 +75,7 @@ fn token_bounds(cost: &[f32], tokens: usize, frames: usize) -> Result<Vec<(usize
             *boundary = (*boundary).min(frame);
         }
     }
-    Ok(jump.windows(2).skip(1).take(tokens).map(|pair| (pair[0] * 2, pair[1].max(pair[0]) * 2)).collect())
+    Ok(jump.windows(2).take(tokens).map(|pair| (pair[0] * 2, pair[1].max(pair[0]) * 2)).collect())
 }
 
 /// Median filter with reflect padding.
@@ -166,23 +168,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_word_does_not_inherit_five_seconds_of_leading_audio() {
-        // Prompt consumes 0–5s (which may include noise), "It" occupies
-        // 5–5.2s, and EOT consumes the remaining audio. Units are 20ms.
+    fn a_token_takes_the_frames_of_the_row_that_predicts_it() {
+        // Prompt row (predicting "It") covers 5–5.2s, the "It" row (predicting EOT) covers the
+        // pause after it, EOT the rest. Units are 20ms. Leading audio before 5s stays with the
+        // prompt row's entry (frame 0); the energy trim in `vad` removes it.
         let mut cost = vec![10.0; 3 * 300];
-        cost[..250].fill(-10.0);
-        cost[300 + 250..300 + 260].fill(-10.0);
-        cost[600 + 260..].fill(-10.0);
-        assert_eq!(token_bounds(&cost, 1, 300).unwrap(), vec![(500, 520)]);
+        cost[250..260].fill(-10.0);
+        cost[300 + 260..300 + 280].fill(-10.0);
+        cost[600 + 280..].fill(-10.0);
+        assert_eq!(token_bounds(&cost, 1, 300).unwrap(), vec![(0, 520)]);
     }
 
     #[test]
-    fn consecutive_tokens_keep_their_own_attention_boundaries() {
+    fn consecutive_tokens_are_not_shifted_by_one() {
+        // regression: tokens took the frames of the row after the one predicting them, so every
+        // word landed one token late
         let mut cost = vec![10.0; 4 * 10];
-        cost[0] = -10.0; // prompt, no leading pause
-        cost[10..14].fill(-10.0); // first token at 0–80ms
-        cost[24..27].fill(-10.0); // second at 80–140ms
-        cost[37..40].fill(-10.0); // EOT
+        cost[..4].fill(-10.0); // prompt row: first token at 0–80ms
+        cost[14..17].fill(-10.0); // first token's row: second token at 80–140ms
+        cost[27..30].fill(-10.0); // second token's row: the pause, 140–200ms
+        cost[30..].fill(-10.0); // EOT
         assert_eq!(token_bounds(&cost, 2, 10).unwrap(), vec![(0, 8), (8, 14)]);
     }
 
