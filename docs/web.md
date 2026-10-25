@@ -51,6 +51,7 @@ panic on `wasm32-unknown-unknown` (use `filmcraft_engine::temp_dir`, `web_time`,
 | cpal output | WebAudio `AudioWorklet` |
 | VideoToolbox & co. | WebCodecs `VideoDecoder` |
 | TCP control channel / MCP | `window.filmcraft` (below) |
+| Whisper in `transcript.generate`, models in the data directory | a Web Worker running the same wasm module, models in OPFS ([Speech-to-text](#speech-to-text)) |
 
 ### Threads
 
@@ -59,7 +60,40 @@ wasm threads need a cross-origin isolated page **and** a wasm build with atomics
 mixing and encoding are cooperative on the UI thread, and `rayon` runs inline.
 `filmcraft.info()` reports `crossOriginIsolated` so a threaded build can choose at start-up.
 Commands that need a thread on the desktop (render previews, proxies, Project Manager, mask
-tracking) report an error on the web for now.
+tracking) report an error on the web for now. Speech-to-text is the exception: it runs in a Web
+Worker (below), which needs no shared memory.
+
+The build turns on wasm SIMD (`target-feature=+simd128`, set for `wasm32-unknown-unknown` in
+`.cargo/config.toml`, with the `getrandom_backend` cfg that candle needs). A `RUSTFLAGS`
+environment variable replaces those flags, so add them to it if you set one.
+
+### Speech-to-text
+
+`transcript.generate` (the Text panel's Transcribe button, Transcribe Sequence, Live Captions)
+runs Whisper in `speech-worker.js`, a module worker that instantiates the app's own wasm module and
+calls only its `speech_worker_load` / `speech_worker_transcribe` exports (`src/speech.rs`). The
+UI thread never blocks: the command returns a job at once, and its progress shows like an
+export's (`jobs.list`, `jobs.cancel`).
+
+1. **Audio.** The engine reads each clip's audio as mono 16 kHz, 30 seconds per step, between UI
+   frames; a block whose bytes are still loading is read again on the next frame.
+2. **Model.** Unless OPFS has a verified copy, each file pinned in the model catalogue is fetched
+   from Hugging Face, hashed (SHA-256) and written to `speech/<model>/` as it streams in.
+   `speech/<model>/verified.json` marks a copy whose files all matched. tiny is 154 MB, base
+   293 MB, small 969 MB; a model downloads once per browser profile.
+3. **Transcription.** The audio is transferred to the worker, which reads the model from OPFS and
+   keeps it loaded for the next job. The transcripts come back as JSON and are applied as one
+   undo step; `then` commands run after that.
+
+Cancelling a job terminates the worker (Whisper can't be interrupted mid-window); the next job
+starts a fresh one. A worker error or panic ends the job with its message and is never fatal to
+the page. One job takes at most 2 hours of audio, since the samples are held by both the page and
+the worker.
+
+On an Apple M-series Mac in Chrome, base transcribes about 4.3× faster than real time and tiny
+about 7×, roughly half the desktop's single-threaded speed. Peak wasm memory in the worker is
+about 370 MB with tiny and 660 MB with base. The transcripts match the desktop build's word for
+word.
 
 ### Media reads
 

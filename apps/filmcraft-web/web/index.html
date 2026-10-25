@@ -69,6 +69,8 @@
     // wasm are cached as immutable, so their URLs must change with every build.
     const build = "__FC_BUILD__";
     const v = build.startsWith("__") ? "" : "?v=" + build;
+    // the speech worker loads the same glue and wasm (apps/filmcraft-web/src/speech.rs)
+    window.filmcraftLoad.v = v;
     const t0 = performance.now();
     const params = new URLSearchParams(location.search);
     try {

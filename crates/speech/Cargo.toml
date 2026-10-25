@@ -11,7 +11,8 @@ workspace = true
 
 [features]
 default = []
-# Whisper inference on the CPU via candle (pure Rust). Off by default (and in wasm builds).
+# Whisper inference on the CPU via candle (pure Rust). Off by default; the web build turns it on
+# for its speech worker (apps/filmcraft-web).
 whisper = ["dep:candle-core", "dep:candle-nn"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
 download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
@@ -29,6 +30,7 @@ ureq = { version = "3", default-features = false, features = ["rustls-no-provide
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
 sha2 = "0.10"
+web-time = "1"
 
 [[example]]
 name = "transcribe"

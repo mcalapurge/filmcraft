@@ -1,2 +1,9 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# The web build (docs/web.md). `simd128`: wasm SIMD, in every browser FilmCraft runs on; Whisper
+# runs about 15–20% faster with it. `getrandom_backend`: candle (speech-to-text) takes its random
+# numbers from the browser, which getrandom 0.3 only does when asked (with its `wasm_js` feature,
+# enabled by apps/filmcraft-web). A `RUSTFLAGS` environment variable replaces these flags.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128", "--cfg", 'getrandom_backend="wasm_js"']

@@ -637,7 +637,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 }
 
 fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
-    app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
+    filmcraft_engine::transcript::can_transcribe(&app.session).is_ok()
 }
 
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) {
