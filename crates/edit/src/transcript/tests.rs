@@ -335,3 +335,17 @@ fn live_captions_take_fewer_words_when_they_would_not_fit() {
     assert_eq!(one.len(), words.len());
     assert!(one.windows(2).all(|w| w[0].end <= w[1].start));
 }
+
+#[test]
+fn live_captions_preserve_silence_without_a_default_hold() {
+    let mut words = seq_words(&["It", "uses"]);
+    words[0].start = s(5.0);
+    words[0].end = s(5.2);
+    words[1].start = s(6.0);
+    words[1].end = s(6.4);
+    let rules = LiveCaptionRules { max_words: 1, ..Default::default() };
+    let blocks = live_caption_blocks(&words, &rules, FrameRate::new(25, 1), &|_| true);
+    assert_eq!(blocks.len(), 2);
+    assert_eq!((blocks[0].start, blocks[0].end), (s(5.0), s(5.2)));
+    assert_eq!((blocks[1].start, blocks[1].end), (s(6.0), s(6.4)));
+}

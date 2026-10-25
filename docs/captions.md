@@ -111,8 +111,10 @@ editors make them (project schema v16).
   track's font at the sequence's size (`filmcraft_captions::burn::line_fill`, which also leaves
   room for a popped word or a highlight box): long words and vertical video get fewer words per
   caption. A new caption also starts at a speaker change, at a pause of 0.6 s, after `.` `?` `!`
-  `…`, and after `,` `;` `:` once it has two words. A caption stays up 0.5 s past its last word,
-  or until the next one starts.
+  `…`, and after `,` `;` `:` once it has two words. A caption ends at its last word's end,
+  snapped outward to the sequence frame grid, with no additional hold. Use one word per caption
+  to show only the current word. Existing saved timings require re-transcription and caption
+  regeneration to pick up alignment corrections.
 - **Too long.** A single word wider than the frame is drawn smaller until it fits, instead of
   being cut off. A word-timed caption that no longer fits one line (after a text edit, a bigger
   size or another frame size) wraps; `captions.list` lists these per track in `overflowing`, and

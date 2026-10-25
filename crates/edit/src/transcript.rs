@@ -422,7 +422,7 @@ pub struct LiveCaptionRules {
 
 impl Default for LiveCaptionRules {
     fn default() -> Self {
-        Self { max_words: 3, max_chars: 22, break_pause: Tick(TICKS_PER_SECOND * 3 / 5), hold: Tick(TICKS_PER_SECOND / 2) }
+        Self { max_words: 3, max_chars: 22, break_pause: Tick(TICKS_PER_SECOND * 3 / 5), hold: Tick::ZERO }
     }
 }
 
