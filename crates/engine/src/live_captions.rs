@@ -9,6 +9,7 @@
 //! `captions.setWord` edits one word's text or timing. Looks and highlight settings are track
 //! style (`captions.setStyle` with `preset`, `highlight`, `highlightColor`…).
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use filmcraft_edit::transcript as tx;
@@ -16,7 +17,7 @@ use filmcraft_project::{CAPTION_PRESETS, CaptionFormat, CaptionStyle, CaptionTra
 use filmcraft_time::Tick;
 
 use crate::captions::track_param;
-use crate::commands::{CommandSpec, bad, has_seq, str_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, has_seq, str_p, u64_p};
 use crate::{EngineError, Result, Session};
 
 /// Most words a live caption may hold.
@@ -45,10 +46,124 @@ pub fn frame_size(s: &Session) -> (u32, u32) {
     s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080))
 }
 
-/// A look from [`CAPTION_PRESETS`], placed for the active sequence's frame.
+/// A reusable track style stored in the user's preferences, not in a project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptionPreset {
+    pub name: String,
+    pub style: CaptionStyle,
+}
+
+const MAX_PRESETS: usize = 128;
+
+fn valid_name(name: &str) -> bool {
+    !name.trim().is_empty() && name == name.trim() && name.chars().count() <= 80 && !name.chars().any(char::is_control)
+}
+
+fn valid_style(style: &CaptionStyle) -> bool {
+    style.font.len() <= 256
+        && style.font_style.len() <= 256
+        && [(style.size, 4.0, 400.0), (style.outline, 0.0, 40.0), (style.margin, 0.0, 0.45), (style.line_spacing, 0.8, 4.0), (style.highlight_scale, 0.5, 2.0)]
+            .iter()
+            .all(|(value, min, max)| value.is_finite() && (*min..=*max).contains(value))
+}
+
+/// A corrupt preset must not discard unrelated preferences or the other saved looks.
+pub(crate) fn deserialize_presets<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<CaptionPreset>, D::Error> {
+    let value = Value::deserialize(d)?;
+    let mut out: Vec<CaptionPreset> = Vec::new();
+    if let Some(entries) = value.as_array() {
+        for entry in entries.iter().take(MAX_PRESETS) {
+            match serde_json::from_value::<CaptionPreset>(entry.clone()) {
+                Ok(preset) if valid_name(&preset.name) && valid_style(&preset.style) && !out.iter().any(|p| p.name.eq_ignore_ascii_case(&preset.name)) => {
+                    out.push(preset)
+                }
+                _ => log::warn!("Ignoring an invalid or duplicate saved caption preset"),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Built-in looks followed by user looks; user overrides keep the built-in card's position.
+pub fn preset_names(s: &Session) -> Vec<String> {
+    let mut names: Vec<String> = CAPTION_PRESETS.iter().map(|name| (*name).to_string()).collect();
+    names.extend(s.prefs.caption_presets.iter().filter(|p| !CAPTION_PRESETS.iter().any(|name| name.eq_ignore_ascii_case(&p.name))).map(|p| p.name.clone()));
+    names
+}
+
+/// Saved looks take precedence over the factory style. Applying a saved look keeps its exact style.
 pub fn preset_style(s: &Session, name: &str, cmd: &str) -> Result<CaptionStyle> {
+    if let Some(preset) = s.prefs.caption_presets.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
+        if !valid_style(&preset.style) {
+            return Err(bad(cmd, "the saved caption preset has invalid style values"));
+        }
+        return Ok(preset.style.clone());
+    }
     let (w, h) = frame_size(s);
-    CaptionStyle::preset_for(name, w, h).ok_or_else(|| bad(cmd, format!("unknown preset `{name}` (one of {})", CAPTION_PRESETS.join(", "))))
+    CaptionStyle::preset_for(name, w, h).ok_or_else(|| bad(cmd, format!("unknown caption preset `{name}`")))
+}
+
+fn persist_presets(s: &mut Session, prefs: crate::autosave::Preferences) -> Result<()> {
+    // Write first: a full disk must not leave a successful-looking in-memory update.
+    if let Some(path) = &s.prefs_path {
+        prefs.save(path).map_err(|e| EngineError::Other(format!("Could not save caption presets: {e}")))?;
+    }
+    s.prefs = prefs;
+    Ok(())
+}
+
+fn save_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "captions.savePreset";
+    let name = str_p(p, "name")
+        .map(str::trim)
+        .filter(|name| valid_name(name))
+        .ok_or_else(|| bad(CMD, "use a preset name of 1–80 characters without control characters"))?;
+    let existing = preset_names(s).into_iter().find(|n| n.eq_ignore_ascii_case(name));
+    if existing.is_some() && !bool_p(p, "overwrite").unwrap_or(false) {
+        return Err(bad(CMD, "a preset with this name already exists; use Save changes to update it"));
+    }
+    let name = existing.unwrap_or_else(|| name.to_string());
+    let tid = track_param(s, p).ok_or_else(|| bad(CMD, "choose a caption track to save its style"))?;
+    let style = s.active_sequence().and_then(|q| q.caption_track(tid)).map(|t| t.style.clone()).ok_or_else(|| bad(CMD, "no such caption track"))?;
+    if !valid_style(&style) {
+        return Err(bad(CMD, "the caption style has invalid or oversized values"));
+    }
+    let mut prefs = s.prefs.clone();
+    if let Some(preset) = prefs.caption_presets.iter_mut().find(|preset| preset.name.eq_ignore_ascii_case(&name)) {
+        preset.style = style;
+    } else {
+        if prefs.caption_presets.len() >= MAX_PRESETS {
+            return Err(bad(CMD, "the caption preset library is full (128 looks); delete a saved look first"));
+        }
+        prefs.caption_presets.push(CaptionPreset { name: name.clone(), style });
+    }
+    persist_presets(s, prefs)?;
+    Ok(json!({"saved": name}))
+}
+
+fn delete_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_p(p, "name").ok_or_else(|| bad("captions.deletePreset", "a preset name is required"))?;
+    let mut prefs = s.prefs.clone();
+    let count = prefs.caption_presets.len();
+    prefs.caption_presets.retain(|preset| !preset.name.eq_ignore_ascii_case(name));
+    if count == prefs.caption_presets.len() {
+        return Err(bad("captions.deletePreset", "this preset has no saved changes to remove"));
+    }
+    persist_presets(s, prefs)?;
+    Ok(json!({"deleted": name}))
+}
+
+fn list_presets(s: &mut Session, _: &Value) -> Result<Value> {
+    let presets = preset_names(s)
+        .into_iter()
+        .map(|name| {
+            let style = preset_style(s, &name, "captions.listPresets")?;
+            let built_in = CAPTION_PRESETS.iter().any(|n| n.eq_ignore_ascii_case(&name));
+            let customized = s.prefs.caption_presets.iter().any(|p| p.name.eq_ignore_ascii_case(&name));
+            Ok(json!({"name": name, "style": style, "builtIn": built_in, "customized": customized}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({"presets": presets}))
 }
 
 fn preset_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<CaptionStyle>> {
@@ -181,11 +296,41 @@ fn set_word(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
+            id: "captions.listPresets",
+            label: "List Caption Presets",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: list_presets,
+            journal: false,
+        },
+        CommandSpec {
+            id: "captions.savePreset",
+            label: "Save Caption Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"track":id|"C1"?,"name":str,"overwrite":bool=false}"#,
+            enabled: has_seq,
+            run: save_preset,
+            journal: false,
+        },
+        CommandSpec {
+            id: "captions.deletePreset",
+            label: "Delete or Reset Caption Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"name":str}"#,
+            enabled: always,
+            run: delete_preset,
+            journal: false,
+        },
+        CommandSpec {
             id: "captions.createLive",
             label: "Create Live Captions",
             menu: &["Sequence", "Captions"],
             shortcut: None,
-            params: r#"{"maxWords":1..8=3,"maxChars":int=22 (a caption also never holds more words than fit on one line of the frame),"preset":"Classic|Pop|Box|Karaoke|Neon|Banner|Minimal|Subtitle"?,"source":"transcript|track"?,"track":id|"C1"?,"name":str?}"#,
+            params: r#"{"maxWords":1..8=3,"maxChars":int=22 (a caption also never holds more words than fit on one line of the frame),"preset":str?,"source":"transcript|track"?,"track":id|"C1"?,"name":str?}"#,
             enabled: has_seq,
             run: create_live,
             journal: true,

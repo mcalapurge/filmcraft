@@ -42,11 +42,13 @@ pub struct LiveCaptionsUi {
     pub words: u8,
     /// Inspector sections that are closed (`"Font"`, `"Outline"`, `"Position"`, `"Spoken word"`).
     pub collapsed: Vec<String>,
+    pub selected_preset: String,
+    pub preset_name: String,
 }
 
 impl Default for LiveCaptionsUi {
     fn default() -> Self {
-        Self { tab: "Templates".into(), words: 3, collapsed: Vec::new() }
+        Self { tab: "Templates".into(), words: 3, collapsed: Vec::new(), selected_preset: String::new(), preset_name: String::new() }
     }
 }
 
@@ -534,17 +536,63 @@ fn inspector(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, tr: &Caption
 }
 
 /// The looks as Essential Graphics–style cards: a preview, the name and what it does.
-fn templates_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, (fw, fh): (u32, u32), actions: &mut Vec<(String, Value)>) {
+fn templates_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, _frame: (u32, u32), actions: &mut Vec<(String, Value)>) {
     let t = app.tokens;
+    let names = filmcraft_engine::live_captions::preset_names(&app.session);
+    if app.ui.live_captions.selected_preset.is_empty()
+        && let Some(name) = names
+            .iter()
+            .find(|name| filmcraft_engine::live_captions::preset_style(&app.session, name, "captions.setStyle").is_ok_and(|style| style == tr.style))
+    {
+        app.ui.live_captions.selected_preset = name.clone();
+    }
+    ui.label(tl!("Save the current track style as a reusable look."));
+    let entry = ui.add(
+        egui::TextEdit::singleline(&mut app.ui.live_captions.preset_name).hint_text(tl!("New preset name")).char_limit(80).desired_width(ui.available_width()),
+    );
+    app.auto.add("liveCaptions.presetName", entry.rect, "New preset name");
+    ui.horizontal_wrapped(|ui| {
+        let save = ui.add_enabled(!app.ui.live_captions.preset_name.trim().is_empty(), egui::Button::new(tl!("Save as new")));
+        app.auto.add("liveCaptions.savePreset", save.rect, "Save as new");
+        if save.clicked() {
+            let name = app.ui.live_captions.preset_name.trim().to_string();
+            actions.push(("captions.savePreset".into(), json!({"track": tr.id.0, "name": name})));
+            app.ui.live_captions.selected_preset = name;
+        }
+        let selected = app.ui.live_captions.selected_preset.clone();
+        let exists = names.iter().any(|name| name.eq_ignore_ascii_case(&selected));
+        let update = ui.add_enabled(exists, egui::Button::new(tl!("Save changes"))).on_hover_text(tlf!("Update preset: {name}", name = selected));
+        app.auto.add("liveCaptions.updatePreset", update.rect, "Save changes");
+        if update.clicked() {
+            actions.push(("captions.savePreset".into(), json!({"track": tr.id.0, "name": selected, "overwrite": true})));
+        }
+        let built_in = CAPTION_PRESETS.iter().any(|name| name.eq_ignore_ascii_case(&selected));
+        let saved = app.session.prefs.caption_presets.iter().any(|preset| preset.name.eq_ignore_ascii_case(&selected));
+        let label = if built_in { tl!("Reset preset") } else { tl!("Delete preset") };
+        let remove = ui.add_enabled(saved, egui::Button::new(label));
+        app.auto.add("liveCaptions.deletePreset", remove.rect, label);
+        if remove.clicked() {
+            actions.push(("captions.deletePreset".into(), json!({"name": selected})));
+            if built_in {
+                style_cmd(actions, tr, "preset", json!(selected));
+            } else {
+                app.ui.live_captions.selected_preset.clear();
+            }
+        }
+    });
+    if !app.ui.live_captions.selected_preset.is_empty() {
+        ui.label(tlf!("Selected preset: {name}", name = app.ui.live_captions.selected_preset));
+    }
+    ui.add_space(8.0);
     let gap = 8.0;
     let cols = ((ui.available_width() + gap) / (96.0 + gap)).floor().clamp(1.0, 3.0) as usize;
     let cw = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
     let card = vec2(cw, 52.0 + 36.0);
-    let rows = CAPTION_PRESETS.len().div_ceil(cols);
+    let rows = names.len().div_ceil(cols);
     let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), rows as f32 * (card.y + gap)), Sense::hover());
-    for (i, name) in CAPTION_PRESETS.iter().enumerate() {
+    for (i, name) in names.iter().enumerate() {
         // placed for this sequence's frame, as applying it places it
-        let Some(style) = CaptionStyle::preset_for(name, fw, fh) else { continue };
+        let Ok(style) = filmcraft_engine::live_captions::preset_style(&app.session, name, "captions.setStyle") else { continue };
         let r = Rect::from_min_size(area.min + vec2((i % cols) as f32 * (cw + gap), (i / cols) as f32 * (card.y + gap)), card);
         let id = format!("liveCaptions.preset.{name}");
         let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
@@ -560,7 +608,9 @@ fn templates_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, (
         let pr = Rect::from_min_size(r.min + vec2(5.0, 5.0), vec2(r.width() - 10.0, 46.0));
         caption_sample(ui, pr, &style, &t);
         ui.painter().text(pos2(r.min.x + 6.0, pr.max.y + 5.0), Align2::LEFT_TOP, crate::i18n::t(name), Tokens::ui(11.5), t.text);
-        let blurb = ui.painter().layout_no_wrap(crate::i18n::t(preset_blurb(name)).to_string(), Tokens::ui(10.0), t.text_faint);
+        let customized = app.session.prefs.caption_presets.iter().any(|p| p.name.eq_ignore_ascii_case(name));
+        let description = if customized { "Saved look" } else { preset_blurb(name) };
+        let blurb = ui.painter().layout_no_wrap(crate::i18n::t(description).to_string(), Tokens::ui(10.0), t.text_faint);
         let clip = Rect::from_min_max(pos2(r.min.x, pr.max.y + 19.0), r.max - vec2(0.0, 2.0));
         ui.painter().with_clip_rect(clip).galley(pos2(r.min.x + 6.0, pr.max.y + 19.0), blurb, t.text_faint);
         if selected {
@@ -568,6 +618,7 @@ fn templates_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, (
         }
         app.auto.add(&id, r, name);
         if resp.on_hover_text(tl!("Apply this look to the track")).clicked() {
+            app.ui.live_captions.selected_preset = name.clone();
             style_cmd(actions, tr, "preset", json!(name));
         }
     }

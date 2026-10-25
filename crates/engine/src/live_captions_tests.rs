@@ -276,3 +276,103 @@ fn hostile_params_do_not_panic() {
     }
     s.active_sequence().unwrap().check().unwrap();
 }
+
+#[test]
+fn caption_presets_save_update_apply_reset_and_survive_restart() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-caption-preset-restart-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("preferences.json");
+    let mut s = sequence_with_caption(1080, 1920, "Hello");
+    s.prefs_path = Some(path.clone());
+    s.execute("captions.setStyle", json!({"track": "C1", "preset": "Pop", "font": "Test Font", "size": 88, "margin": 0.2, "highlightScale": 1.4})).unwrap();
+    let expected = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    s.execute("captions.savePreset", json!({"track": "C1", "name": "My look"})).unwrap();
+    assert!(s.execute("captions.savePreset", json!({"name": "my LOOK"})).is_err());
+    s.execute("captions.setStyle", json!({"track": "C1", "reset": true})).unwrap();
+    s.prefs = crate::autosave::Preferences::load(&path);
+    s.execute("captions.setStyle", json!({"track": "C1", "preset": "My look"})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, expected);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_ne!(s.active_sequence().unwrap().caption_tracks[0].style, expected);
+    s.execute("edit.redo", json!({})).unwrap();
+    s.execute("captions.setStyle", json!({"track": "C1", "size": 99})).unwrap();
+    s.execute("captions.savePreset", json!({"name": "MY LOOK", "overwrite": true})).unwrap();
+    assert_eq!(s.prefs.caption_presets.len(), 1);
+    assert_eq!(s.prefs.caption_presets[0].style.size, 99.0);
+    s.execute("captions.savePreset", json!({"name": "Pop", "overwrite": true})).unwrap();
+    assert_eq!(crate::live_captions::preset_style(&s, "pop", "test").unwrap().size, 99.0);
+    s.execute("captions.deletePreset", json!({"name": "Pop"})).unwrap();
+    assert_eq!(crate::live_captions::preset_style(&s, "Pop", "test").unwrap(), CaptionStyle::preset_for("Pop", 1080, 1920).unwrap());
+    s.execute("captions.deletePreset", json!({"name": "My look"})).unwrap();
+    assert!(crate::autosave::Preferences::load(&path).caption_presets.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn caption_preset_write_failure_keeps_library_and_track_unchanged() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-caption-preset-failure-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = sequence_with_caption(1080, 1920, "Hello");
+    // A directory cannot be replaced with the preferences file.
+    s.prefs_path = Some(dir.clone());
+    let before = s.prefs.clone();
+    let project = s.project.clone();
+    let error = s.execute("captions.savePreset", json!({"name": "Lost look"})).unwrap_err();
+    assert!(error.to_string().contains("Could not save caption presets"));
+    assert_eq!(s.prefs, before);
+    assert_eq!(s.project, project);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn malformed_caption_presets_do_not_discard_preferences_or_other_looks() {
+    let valid = json!({"name": "Good", "style": CaptionStyle::default()});
+    let prefs = crate::autosave::Preferences::from_value(json!({
+        "captionPresets": [null, {"name": "broken", "style": {"size": -1}}, valid, {"name": "bad", "style": {"margin": 1e100}}],
+        "autoSave": {"enabled": false}
+    }));
+    assert!(!prefs.auto_save.enabled);
+    assert_eq!(prefs.caption_presets.len(), 1);
+    assert_eq!(prefs.caption_presets[0].name, "Good");
+}
+
+#[test]
+fn caption_preset_commands_reject_hostile_parameters() {
+    let mut s = sequence_with_caption(1080, 1920, "Hello");
+    for params in [json!({}), json!({"name": " "}), json!({"name": "bad\nname"}), json!({"name": "x".repeat(81)}), json!({"name": "look", "track": u64::MAX})] {
+        assert!(s.execute("captions.savePreset", params).is_err());
+    }
+    assert!(s.execute("captions.savePreset", json!({"name": "Classic"})).is_err());
+    assert!(s.execute("captions.deletePreset", json!({"name": "Classic"})).is_err());
+    assert!(s.execute("captions.deletePreset", json!({})).is_err());
+    let list = s.execute("captions.listPresets", json!({})).unwrap();
+    assert_eq!(list["presets"].as_array().unwrap().len(), 8);
+}
+
+#[test]
+fn mutated_caption_preset_preferences_are_bounded_and_never_panic() {
+    let source = serde_json::to_vec(&json!({"captionPresets": [{"name": "Look", "style": CaptionStyle::default()}]})).unwrap();
+    for i in 0..source.len() {
+        for bytes in [source[..i].to_vec(), {
+            let mut changed = source.clone();
+            changed[i] ^= 0xff;
+            changed
+        }] {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    if let Ok(value) = serde_json::from_slice(&bytes) {
+                        let prefs = crate::autosave::Preferences::from_value(value);
+                        assert!(prefs.caption_presets.len() <= 128);
+                    }
+                })
+                .is_ok()
+            );
+        }
+    }
+    let entries: Vec<_> = (0..140).map(|i| json!({"name": format!("Look {i}"), "style": CaptionStyle::default()})).collect();
+    let prefs = crate::autosave::Preferences::from_value(json!({"captionPresets": entries}));
+    assert_eq!(prefs.caption_presets.len(), 128);
+    let mut s = sequence_with_caption(1080, 1920, "Hello");
+    s.prefs = prefs;
+    assert!(s.execute("captions.savePreset", json!({"name": "One too many"})).is_err());
+}
