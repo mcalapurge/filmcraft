@@ -529,7 +529,15 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = !is_hdr
+                    && !has_input_lut
+                    && !has_look_lut
+                    && look == 0
+                    && sharpen.abs() <= 1e-3
+                    && !has_curves
+                    && !has_wheels
+                    && !hsl_on
+                    && !crate::effects::selective_active(e, cx);
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;

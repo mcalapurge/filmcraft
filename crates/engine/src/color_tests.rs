@@ -254,3 +254,34 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+#[test]
+fn selective_colour_parameters_undo_and_section_bypass() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": "lumetri", "param": "selective_red_hue", "value": 45.0})).unwrap();
+    let value = |s: &Session| {
+        let (_, it) = s.active_sequence().unwrap().find_item(clip).unwrap();
+        it.effects.iter().find(|e| e.effect == "lumetri").unwrap().f64_at("selective_red_hue", filmcraft_time::Tick::ZERO)
+    };
+    assert_eq!(value(&s), 45.0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(value(&s), 0.0);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(value(&s), 45.0);
+    let r = s.execute("lumetri.setSection", json!({"clip": clip.0, "section": "selective", "on": false})).unwrap();
+    assert_eq!(r["param"], "selective_on");
+    assert_eq!(r["on"], false);
+}
+
+#[test]
+fn selective_colour_reset_rejects_unknown_bands_without_editing() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    for band in [json!(null), json!(42), json!("../red"), json!(""), json!("RED")] {
+        let rev = s.revision;
+        assert!(s.execute("lumetri.resetSelectiveBand", json!({"clip": clip.0, "band": band})).is_err());
+        assert_eq!(s.revision, rev);
+    }
+}

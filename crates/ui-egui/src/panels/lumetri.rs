@@ -184,6 +184,57 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             match_controls(ui, app, &mut lut_actions);
         }
+        if open_section(ui, app, &e, "Selective Colour", "selective_on", "selective", &mut sections) {
+            let bands = ["red", "yellow", "green", "cyan", "blue", "magenta"];
+            let names = [tl!("Red"), tl!("Yellow"), tl!("Green"), tl!("Cyan"), tl!("Blue"), tl!("Magenta")];
+            let colors = [Color32::RED, Color32::YELLOW, Color32::GREEN, Color32::from_rgb(0, 255, 255), Color32::BLUE, Color32::from_rgb(255, 0, 255)];
+            let key = egui::Id::unique(("selective-band", clip.0, idx));
+            let mut selected = ui.data(|d| d.get_temp::<usize>(key)).unwrap_or(0).min(5);
+            ui.horizontal_wrapped(|ui| {
+                for (i, name) in names.iter().enumerate() {
+                    let r = ui
+                        .selectable_label(selected == i, egui::RichText::new("●").color(colors.get(i).copied().unwrap_or(Color32::WHITE)))
+                        .on_hover_text(*name);
+                    app.auto.add(&format!("lumetri.selective.band.{}", bands.get(i).copied().unwrap_or("red")), r.rect, name);
+                    if r.clicked() {
+                        selected = i;
+                    }
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(key, selected));
+            let band = bands.get(selected).copied().unwrap_or("red");
+            let color_id = format!("selective_{band}_color");
+            ui.horizontal(|ui| {
+                ui.label(names.get(selected).copied().unwrap_or(tl!("Red")));
+                let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: color_id.clone(), mask: None };
+                let armed = app.ui.eyedropper.as_ref() == Some(&target);
+                let r = icons::button(ui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
+                app.auto.add("lumetri.selective.eyedropper", r.rect, "Eyedropper");
+                if r.clicked() {
+                    app.ui.eyedropper = if armed { None } else { Some(target) };
+                }
+                if let Some(c) =
+                    e.param(&color_id).and_then(|p| p.value.as_color()).or_else(|| e.def().and_then(|d| d.param(&color_id)).and_then(|p| p.default.as_color()))
+                {
+                    let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], 1.0);
+                    let r = egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque);
+                    app.auto.add("lumetri.selective.target", r.rect, "Target colour");
+                    if r.changed() {
+                        set(&mut actions, &color_id, json!([rgba.r(), rgba.g(), rgba.b(), 1.0]));
+                    }
+                }
+                let reset = ui.button(tl!("Reset"));
+                app.auto.add("lumetri.selective.reset", reset.rect, "Reset selected colour");
+                if reset.clicked() {
+                    lut_actions.push(("lumetri.resetSelectiveBand", json!({"band": band})));
+                }
+            });
+            for (field, label) in [("hue", tl!("Hue")), ("sat", tl!("Saturation")), ("luma", tl!("Luminance")), ("range", tl!("Range"))] {
+                let id = format!("selective_{band}_{field}");
+                let r = slider(ui, &e, mt, &id, label, None, &t, &mut actions, clip, idx);
+                auto_rows.push((format!("lumetri.param.{id}"), r, label));
+            }
+        }
         if open_section(ui, app, &e, "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, tl!("Key"));
             slider(ui, &e, mt, "hsl_hue", tl!("Hue"), Some(Gradient::Hue), &t, &mut actions, clip, idx);

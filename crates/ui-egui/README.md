@@ -119,6 +119,28 @@ through More, including their selected state and Source/Program routing. A scrol
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
 
+## Selective Colour
+
+The Color workspace's Lumetri panel includes Selective Colour, alongside HSL Secondary.
+Choose red, yellow, green, cyan, blue or magenta, then adjust Hue (degrees), Saturation
+(percent change), Luminance (HSL lightness offset), and Range. Range 1 covers a 60° radius
+with a smooth falloff; 0.1–3 narrows or widens it. Each band retains independent settings.
+The target swatch or eyedropper can replace a band's target hue. Reset restores that band's
+five defaults; double-clicking a slider restores its default value. The section switch bypasses
+all six bands. Neutral pixels remain unchanged. Overlapping bands add adjustments computed
+from the same source hue. HDR uses the existing grading signal and highlight normalization.
+
+Settings are standard Lumetri parameters (`selective_on`, `selective_<band>_color`,
+`selective_<band>_hue`, `_sat`, `_luma`, `_range`), saved with the project, undoable and
+keyframeable through Effect Controls. Automation ids include `lumetri.selective.band.<band>`,
+`lumetri.selective.eyedropper`, `.target`, `.reset`, and `lumetri.param.selective_<band>_<field>`.
+Agents can bypass with `lumetri.setSection` and `section: "selective"`, and edit with
+`effects.setParam`. The interface follows FilmCraft's existing controls; no external artwork
+is used. The adjustment is our own algorithm, with no claim of matching Apple Photos numerically.
+
+`lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
+keyframes in a single undo step. Unknown or missing band names return an error.
+
 ## Font fallbacks
 
 The theme installs every embedded craft-fonts script as a fallback after its ordered Japanese,
