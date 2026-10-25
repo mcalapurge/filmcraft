@@ -621,7 +621,7 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
-fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub(crate) fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
     let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
@@ -718,6 +718,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
     lumetri_advanced(img, e, cx);
     hsl_secondary(img, e, cx);
+    selective_colour(img, e, cx);
     if sharpen.abs() > 1e-3 {
         unsharp(img, 1.2 * cx.px_scale.max(0.35), sharpen.max(-1.0), 0.0);
     }
@@ -1054,7 +1055,7 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+pub(crate) fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }
@@ -1613,4 +1614,67 @@ mod lumetri_cpu_parity_tests {
         let oval = render(-100.0);
         assert!(red(&oval, 79, 20) > red(&ellipse, 79, 20), "negative values widen the oval");
     }
+}
+
+/// Bands share one source hue: overlapping adjustments add rather than re-keying each other.
+const SELECTIVE_BANDS: [&str; 6] = ["red", "yellow", "green", "cyan", "blue", "magenta"];
+
+pub(crate) fn selective_active(e: &EffectInstance, cx: &FxCtx) -> bool {
+    on(e, "selective_on")
+        && SELECTIVE_BANDS.iter().any(|band| {
+            ["hue", "sat", "luma"].iter().any(|field| {
+                let v = f(e, &format!("selective_{band}_{field}"), cx);
+                v.is_finite() && v.abs() > 1e-6
+            })
+        })
+}
+
+fn selective_colour(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    if !selective_active(e, cx) {
+        return;
+    }
+    let finite = |v: f32, fallback: f32| if v.is_finite() { v } else { fallback };
+    let bands = SELECTIVE_BANDS.map(|band| {
+        let id = format!("selective_{band}_color");
+        let target = e
+            .param(&id)
+            .and_then(|p| p.value_at(cx.t).as_color())
+            .or_else(|| e.def().and_then(|d| d.param(&id)).and_then(|p| p.default.as_color()))
+            .unwrap_or([1.0, 0.0, 0.0, 1.0]);
+        let rgb = [target[0], target[1], target[2]].map(|v| linear_to_srgb(finite(v, 0.0).clamp(0.0, 1.0)));
+        let center = rgb_to_hsl(rgb[0], rgb[1], rgb[2])[0];
+        let value = |field: &str, fallback| finite(f(e, &format!("selective_{band}_{field}"), cx), fallback);
+        (
+            center,
+            value("range", 1.0).clamp(0.1, 3.0) / 6.0,
+            value("hue", 0.0).clamp(-180.0, 180.0) / 360.0,
+            value("sat", 0.0).clamp(-100.0, 100.0) / 100.0,
+            value("luma", 0.0).clamp(-100.0, 100.0) / 100.0,
+        )
+    });
+    let gs = grade_space(e, cx, "curves_hdr_range");
+    img.map_rgb(|c, _, _| {
+        let v = gs.encode(c);
+        let hdr = gs.is_hdr();
+        let out = within_unit(v, hdr, |u| {
+            let mut hsl = rgb_to_hsl(u[0], u[1], u[2]);
+            let original = hsl;
+            let (mut dh, mut ds, mut dl) = (0.0, 0.0, 0.0);
+            for (center, width, hue, sat, luma) in bands {
+                let d = (original[0] - center).abs();
+                let distance = d.min(1.0 - d);
+                let x = (1.0 - distance / width).clamp(0.0, 1.0);
+                // Smooth falloff and no colour selection in neutral pixels.
+                let weight = x * x * (3.0 - 2.0 * x) * (original[1] / 0.05).clamp(0.0, 1.0);
+                dh += hue * weight;
+                ds += sat * weight;
+                dl += luma * weight;
+            }
+            hsl[0] = (original[0] + dh).rem_euclid(1.0);
+            hsl[1] = (original[1] * (1.0 + ds)).clamp(0.0, 1.0);
+            hsl[2] = (original[2] + dl * 0.5).clamp(0.0, 1.0);
+            hsl_to_rgb(hsl[0], hsl[1], hsl[2])
+        });
+        gs.decode(out)
+    });
 }

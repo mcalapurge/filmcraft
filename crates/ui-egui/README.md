@@ -100,3 +100,47 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Selective Colour
+
+The Color workspace's Lumetri panel includes Selective Colour, alongside HSL Secondary.
+Choose red, yellow, green, cyan, blue or magenta, then adjust Hue (degrees), Saturation
+(percent change), Luminance (HSL lightness offset), and Range. Range 1 covers a 60° radius
+with a smooth falloff; 0.1–3 narrows or widens it. Each band retains independent settings.
+The target swatch or eyedropper can replace a band's target hue. Reset restores that band's
+five defaults; double-clicking a slider restores its default value. The section switch bypasses
+all six bands. Neutral pixels remain unchanged. Overlapping bands add adjustments computed
+from the same source hue. HDR uses the existing grading signal and highlight normalization.
+Active adjustments use the GPU compute effect path when available (Metal on Apple silicon), with the CPU renderer retained as fallback.
+
+Settings are standard Lumetri parameters (`selective_on`, `selective_<band>_color`,
+`selective_<band>_hue`, `_sat`, `_luma`, `_range`), saved with the project, undoable and
+keyframeable through Effect Controls. Automation ids include `lumetri.selective.band.<band>`,
+`lumetri.selective.eyedropper`, `.target`, `.reset`, and `lumetri.param.selective_<band>_<field>`.
+Agents can bypass with `lumetri.setSection` and `section: "selective"`, and edit with
+`effects.setParam`. The interface follows FilmCraft's existing controls; no external artwork
+is used. The adjustment is our own algorithm, with no claim of matching Apple Photos numerically.
+
+`lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
+keyframes in a single undo step. Unknown or missing band names return an error.
+
+
+## Lumetri GPU rendering
+
+Basic/creative corrections, vignette, RGB and hue curves, colour wheels, procedural looks,
+imported 1D/shaper/3D LUTs, HSL Secondary (including median denoise, mask blur and mask views),
+Selective Colour, sharpening and PQ/HLG grading run in the wgpu compute stage. Tables retain
+CPU interpolation; no baked colour cube approximates the grade. Full-frame adjustment layers
+at normal opacity/blend and default Motion use canvas compute passes. HDR display conversion
+runs after compositing and before captions. Working-output exports skip display conversion.
+
+Masked effects, adjustment layers with masks/custom Motion/opacity/blend, unsupported effects
+elsewhere in a chain and complex transitions still use the existing CPU fallback. Log source
+conversion can remain on the CPU while Lumetri itself runs on the GPU. Tables are limited to
+32 MiB and median windows to radius 8 (normal playback uses radius 1–3); unsupported resource
+sizes fall back. Metal tests compare SDR/PQ/HLG, alpha, LUT interpolation, HSL refinement and
+canvas output with the independent CPU renderer.
+
+The timeline uses GPU cost estimates only when its actual compositor has an available effect
+stage and software rendering is off. Those estimates are not measured frame-rate guarantees;
+preview hashes and rendered-preview coverage do not depend on the hardware path.

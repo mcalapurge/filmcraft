@@ -356,6 +356,16 @@ impl OutputTransform {
         let compress = (!gamut_within(wg, tg)).then(|| [l[0] as f32, l[1] as f32, l[2] as f32]);
         OutputTransform { target, matrix: to_f32(&gamut_matrix(wg, tg)), identity_matrix: wg == tg, tone, compress }
     }
+    /// Linear output stages for the GPU compositor (the final sRGB encode is separate).
+    pub fn gpu_params(&self) -> GpuInputParams {
+        GpuInputParams {
+            curve: GpuCurve::Linear,
+            hlg: None,
+            matrix: (!self.identity_matrix).then_some(self.matrix),
+            tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
+            desaturate: self.compress,
+        }
+    }
     pub fn is_identity(&self) -> bool {
         self.identity_matrix && self.tone.is_none()
     }

@@ -57,6 +57,7 @@ type Target = (wgpu::Texture, wgpu::TextureView);
 
 pub(crate) struct FxStage {
     px: wgpu::ComputePipeline,
+    median: wgpu::ComputePipeline,
     run: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
@@ -68,6 +69,7 @@ pub(crate) struct FxStage {
 /// One compute pass of a job.
 struct Dispatch {
     run: bool,
+    median: bool,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -93,6 +95,7 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    data: Option<std::sync::Arc<Vec<f32>>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,7 +103,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, data: None }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -116,6 +119,53 @@ fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
 fn steps(op: &FxOp) -> Vec<Step> {
     let mut out = Vec::new();
     match op {
+        FxOp::OutputColor(params) => {
+            let matrix = params.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+            let mut s = step(38, [params.tone.is_some() as u32, params.desaturate.is_some() as u32, 0, 0], &[]);
+            for (dst, src) in s.p.iter_mut().zip(matrix.iter().flatten()) {
+                *dst = *src;
+            }
+            let (src, dst) = params.tone.unwrap_or((1.0, 1.0));
+            s.p[9] = src;
+            s.p[10] = dst;
+            s.p[11..14].copy_from_slice(&params.desaturate.unwrap_or([0.0; 3]));
+            out.push(s);
+        }
+
+        FxOp::LumetriFull(full) => {
+            out.push(step(32, [0; 4], &[]));
+            out.push(step(33, [0; 4], &[]));
+            if full.hsl {
+                let start = out.len();
+                out.push(step(34, [0; 4], &[]));
+                if full.median_radius > 0 {
+                    out.push(step(35, [full.median_radius, 0, 0, 0], &[]));
+                }
+                boxes(&full.mask_blur.0, false, true, &mut out);
+                boxes(&full.mask_blur.1, true, true, &mut out);
+                for s in out.iter_mut().skip(start) {
+                    s.unsharp_blur = true;
+                }
+                let mut correct = step(36, [0; 4], &[]);
+                correct.combine = true;
+                out.push(correct);
+            }
+            if full.selective {
+                out.push(step(37, [0; 4], &[]));
+            }
+            if full.sharpen.abs() > 1e-3 {
+                out.extend(steps(&FxOp::Unsharp {
+                    rx: full.sharpen_blur.0.clone(),
+                    ry: full.sharpen_blur.1.clone(),
+                    amount: full.sharpen.max(-1.0),
+                    threshold: 0.0,
+                }));
+            }
+            for s in &mut out {
+                s.data = Some(full.data.clone());
+            }
+        }
+
         FxOp::BrightnessContrast { br, co } => out.push(step(OP_BRIGHTNESS_CONTRAST, [0; 4], &[*br, *co])),
         FxOp::ProcAmp { br, co, hue, sat } => out.push(step(OP_PROC_AMP, [0; 4], &[*br, *co, *hue, *sat])),
         FxOp::Tint { black, white, amount } => {
@@ -254,7 +304,9 @@ impl FxStage {
     /// texture (WebGL2-class devices can't; they render effects on the CPU).
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
-        l.max_storage_textures_per_shader_stage >= 1
+        l.max_storage_buffers_per_shader_stage >= 1
+            && l.max_storage_buffer_binding_size >= (filmcraft_render::lumetri_gpu::MAX_DATA_FLOATS * 4) as u64
+            && l.max_storage_textures_per_shader_stage >= 1
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -264,7 +316,7 @@ impl FxStage {
     pub(crate) fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-fx"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("fx.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(format!("{}\n{}", include_str!("fx.wgsl"), include_str!("lumetri.wgsl")).into()),
         });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -297,6 +349,16 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -331,7 +393,7 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), median: compute("lumetri_median"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -399,6 +461,7 @@ impl FxStage {
         let mut cur = 0usize;
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
+        let mut data_buffers: HashMap<usize, wgpu::Buffer> = HashMap::new();
         for s in &all {
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
             if (s.unsharp_blur || s.combine) && orig.is_none() {
@@ -424,6 +487,18 @@ impl FxStage {
                 mapped_at_creation: false,
             });
             queue.write_buffer(&buf, 0, &bytes);
+            let data_key = s.data.as_ref().map_or(0, |d| std::sync::Arc::as_ptr(d) as usize);
+            let table = data_buffers.entry(data_key).or_insert_with(|| {
+                let bytes: Vec<u8> = s.data.as_ref().map_or_else(|| vec![0; 4], |d| d.iter().flat_map(|v| v.to_le_bytes()).collect());
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("lumetri-tables"),
+                    size: bytes.len() as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&buffer, 0, &bytes);
+                buffer
+            });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -432,15 +507,18 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: table.as_entire_binding() },
                 ],
             });
-            let groups = if s.run {
+            let groups = if s.code == 35 {
+                (w.div_ceil(8), h.div_ceil(8))
+            } else if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
                 (lines.div_ceil(64), 1)
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            dispatches.push(Dispatch { run: s.run, median: s.code == 35, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -480,7 +558,13 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(if d.median {
+                &self.median
+            } else if d.run {
+                &self.run
+            } else {
+                &self.px
+            });
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }

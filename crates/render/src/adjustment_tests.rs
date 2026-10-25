@@ -363,3 +363,23 @@ fn basic_3d_keeps_its_perspective_at_every_render_scale() {
         }
     }
 }
+
+#[test]
+fn lumetri_hdr_and_adjustment_are_planned_as_gpu_effects() {
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        let mut s = scene(2);
+        s.p.sequence_mut(s.seq).unwrap().settings.color.working = working;
+        let red = matte(&mut s.p, &mut s.map, [0.7, 0.1, 0.05, 1.0]);
+        place(&mut s.p, s.seq, 0, red);
+        let adj = adjustment(&mut s.p, s.seq, 1);
+        fx(&mut s, adj, "lumetri");
+        clip(&mut s, adj).effect_mut("lumetri").unwrap().params.get_mut("selective_red_hue").unwrap().value = ParamValue::Float(35.0);
+        let plan = crate::plan::plan_frame(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map);
+        let crate::plan::FramePlan::Composite { steps, .. } = &plan else { panic!("expected GPU canvas plan for {working:?}") };
+        assert!(steps.iter().any(|s| matches!(s, crate::plan::PlanStep::Effects(_))));
+        let cpu = render(&s);
+        let planned = crate::plan::execute_cpu(&plan);
+        let worst = cpu.px.iter().zip(&planned.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 0.005, "{working:?}: {worst}");
+    }
+}

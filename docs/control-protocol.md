@@ -217,3 +217,17 @@ resizes the root split; path entries use `false` for the first child and `true` 
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the
 layout unchanged. Pointer gestures dispatch through this same catalog command.
+
+### Selective Colour
+
+Lumetri's Selective Colour section has independent red/yellow/green/cyan/blue/magenta
+bands. `effects.setParam` accepts `selective_<band>_hue` (−180…180 degrees),
+`_sat` and `_luma` (−100…100), `_range` (0.1…3; default 1), and `_color`
+(linear RGBA target). `lumetri.setSection {section: "selective", on: false}` bypasses
+the section. Changes use the normal project persistence, undo, and keyframe machinery.
+UI ids: `lumetri.section.Selective Colour`, `lumetri.selective.band.<band>`,
+`lumetri.selective.eyedropper`, `.target`, `.reset`, and
+`lumetri.param.selective_<band>_<field>`.
+
+`lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
+keyframes in a single undo step. Unknown or missing band names return an error.

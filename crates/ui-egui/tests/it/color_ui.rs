@@ -25,13 +25,21 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
+        let mut app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |_cc| app);
+        let harness = b.build_eframe(move |cc| {
+            if std::env::var_os("FILMCRAFT_UI_TEST_GPU").is_some()
+                && let Some(rs) = &cc.wgpu_render_state
+            {
+                app.set_wgpu(rs.clone());
+                assert!(app.gpu.as_ref().is_some_and(|g| g.compositor.gpu_effects_available()));
+            }
+            app
+        });
         let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d
@@ -363,4 +371,35 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     d.frames(3);
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
+}
+
+#[test]
+fn selective_colour_bands_controls_reset_and_eyedropper() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    d.click("lumetri.section.Basic Correction");
+    d.click("lumetri.section.Selective Colour");
+    for band in ["red", "yellow", "green", "cyan", "blue", "magenta"] {
+        d.click(&format!("lumetri.selective.band.{band}"));
+        for field in ["hue", "sat", "luma", "range"] {
+            assert!(!d.ids(&format!("lumetri.param.selective_{band}_{field}")).is_empty());
+        }
+    }
+    d.click("lumetri.selective.eyedropper");
+    assert_eq!(d.app().ui.eyedropper.as_ref().unwrap().param, "selective_magenta_color");
+    d.click("lumetri.selective.eyedropper");
+    assert!(d.app().ui.eyedropper.is_none());
+    d.exec("effects.setParam", json!({"clip": clip, "effect": 0, "param": "selective_magenta_hue", "value": 50.0}));
+    d.click("lumetri.selective.reset");
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["selective_magenta_hue"]["value"], json!("Float(0.0)"));
+    d.exec("edit.undo", json!({}));
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["selective_magenta_hue"]["value"], json!("Float(50.0)"));
+    d.exec("edit.redo", json!({}));
+    d.snapshot("color-selective-colour", None);
 }

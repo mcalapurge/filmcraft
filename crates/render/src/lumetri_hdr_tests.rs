@@ -181,3 +181,77 @@ fn hsl_refine_blur_softens_the_key() {
     let speck = img.get(3, 3);
     assert!(speck[0] > speck[1], "speckle left alone after denoise: {speck:?}");
 }
+
+fn selective_pixel(rgb: [f32; 3], params: &[(&str, ParamValue)]) -> [f32; 3] {
+    let mut img = Image::new(1, 1);
+    img.px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+    apply(&mut img, &lumetri(params), &cx(WorkingSpace::Rec709));
+    [img.px[0], img.px[1], img.px[2]]
+}
+
+#[test]
+fn selective_colour_targets_red_leaves_green_and_neutrals() {
+    let params = [("selective_red_hue", F(120.0))];
+    let red = selective_pixel([1.0, 0.0, 0.0], &params);
+    assert!(red[1] > 0.9 && red[0] < 0.01, "{red:?}");
+    let green = selective_pixel([0.0, 1.0, 0.0], &params);
+    assert!(green[1] > 0.9 && green[0] < 0.01, "{green:?}");
+    let neutral = selective_pixel([0.2; 3], &[("selective_red_luma", F(100.0))]);
+    for v in neutral {
+        assert!((v - 0.2).abs() < 0.002);
+    }
+}
+
+#[test]
+fn selective_colour_independent_bands_bypass_and_luminance() {
+    let params = [("selective_red_sat", F(-100.0)), ("selective_green_luma", F(-60.0))];
+    let red = selective_pixel([1.0, 0.0, 0.0], &params);
+    assert!((red[0] - red[1]).abs() < 0.002 && (red[1] - red[2]).abs() < 0.002);
+    let green = selective_pixel([0.0, 1.0, 0.0], &params);
+    assert!(green[1] < 0.5, "{green:?}");
+    let bypass = selective_pixel([1.0, 0.0, 0.0], &[("selective_red_sat", F(-100.0)), ("selective_on", ParamValue::Bool(false))]);
+    assert!(bypass[0] > 0.9 && bypass[1] < 0.01);
+}
+
+#[test]
+fn selective_colour_hostile_values_stay_finite() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e30, 1e30] {
+        let result = std::panic::catch_unwind(|| {
+            selective_pixel(
+                [1.0, 0.0, 0.0],
+                &[("selective_red_range", F(value)), ("selective_red_hue", F(value)), ("selective_red_sat", F(value)), ("selective_red_luma", F(value))],
+            )
+        });
+        assert!(result.unwrap().iter().all(|v| v.is_finite()));
+    }
+}
+
+#[test]
+fn selective_colour_wraps_red_range_and_preserves_hdr_alpha() {
+    let rgb = filmcraft_color::hsl_to_rgb(0.99, 1.0, 0.5).map(filmcraft_color::srgb_to_linear);
+    let shifted = selective_pixel(rgb, &[("selective_red_hue", F(120.0))]);
+    assert!(shifted[1] > shifted[0], "red wraparound: {shifted:?}");
+    let original = selective_pixel(rgb, &[]);
+    let narrow = selective_pixel(rgb, &[("selective_red_hue", F(120.0)), ("selective_red_range", F(0.1))]);
+    assert!((narrow[0] - original[0]).abs() < (shifted[0] - original[0]).abs());
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let mut image = Image::new(1, 1);
+        image.px.copy_from_slice(&[2.0, 0.0, 0.0, 0.5]);
+        apply(&mut image, &lumetri(&[("selective_red_hue", F(120.0))]), &cx(working));
+        assert_eq!(image.px[3], 0.5);
+        assert!(image.px.iter().all(|v| v.is_finite()));
+        assert!(image.px[1] > 0.5, "HDR highlights: {:?}", image.px);
+    }
+}
+
+#[test]
+fn selective_colour_old_project_defaults_and_custom_targets() {
+    let mut e = lumetri(&[("selective_green_hue", F(120.0))]);
+    e.params.remove("selective_green_color");
+    let mut image = Image::new(1, 1);
+    image.px.copy_from_slice(&[0.0, 1.0, 0.0, 1.0]);
+    apply(&mut image, &e, &cx(WorkingSpace::Rec709));
+    assert!(image.px[2] > 0.9 && image.px[1] < 0.01);
+    let out = selective_pixel([0.0, 1.0, 0.0], &[("selective_red_color", ParamValue::Color([0.0, 1.0, 0.0, 1.0])), ("selective_red_hue", F(120.0))]);
+    assert!(out[2] > 0.9 && out[1] < 0.01);
+}

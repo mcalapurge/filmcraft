@@ -300,3 +300,15 @@ fn a_nests_audio_previews_follow_the_sound_of_its_sequence() {
     assert_eq!(audio_hashes(&p, outer), audio, "a video effect inside the nest");
     assert_eq!(audio_hashes(&p, top), deep);
 }
+
+#[test]
+fn lumetri_gpu_render_bar_estimate_preserves_preview_hashes() {
+    let (mut p, matte, _, seq) = setup();
+    let id = place(&mut p, seq, 0, matte, 0, 48);
+    add_fx(&mut p, seq, id, "lumetri");
+    let cpu = video_segments(&p, seq);
+    let gpu = crate::preview::video_segments_with_gpu(&p, seq, true);
+    assert_eq!(cpu[0].hash, gpu[0].hash);
+    assert!(gpu[0].cost_ms < cpu[0].cost_ms);
+    assert_eq!(gpu[0].need, Need::Realtime);
+}

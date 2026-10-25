@@ -262,6 +262,7 @@ pub fn prepare(plan: &FramePlan) -> PreparedPlan {
             children: steps
                 .iter()
                 .flat_map(|s| match s {
+                    PlanStep::Effects(_) => Vec::new(),
                     PlanStep::Layers(layers) => vec![prepare_layers(layers)],
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| prepare_layers(ls)).collect(),
                 })
@@ -276,6 +277,10 @@ fn prepare_layers(layers: &[PlanLayer]) -> PreparedPlan {
 }
 
 impl GpuCompositor {
+    pub fn gpu_effects_available(&self) -> bool {
+        self.fx.is_some()
+    }
+
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-composite"),
@@ -398,6 +403,8 @@ impl GpuCompositor {
                 match poll_now(scope.pop()) {
                     Some(None) => Some(stage),
                     Some(Some(e)) => {
+                        #[cfg(test)]
+                        eprintln!("GPU effect shader validation: {e}");
                         log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
                         None
                     }
@@ -749,7 +756,7 @@ impl GpuCompositor {
                 if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
                     return None;
                 }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
+                let img = filmcraft_render::plan::effect_image_with(&l.frame, lfx, l.input.as_deref());
                 Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
             })
             .collect();
@@ -932,7 +939,9 @@ impl GpuCompositor {
     }
 
     fn composite_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
-        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
+        if (self.fx.is_none() && steps.iter().any(|s| matches!(s, PlanStep::Effects(_))))
+            || steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"))
+        {
             self.cpu_transitions += 1;
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             return self.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None);
@@ -942,6 +951,12 @@ impl GpuCompositor {
         let mut children = prep.map(|p| p.children.iter());
         for step in steps {
             match step {
+                PlanStep::Effects(ops) => {
+                    if !self.apply_canvas_fx(ops, dims) {
+                        let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
+                        return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, true);
+                    }
+                }
                 PlanStep::Layers(layers) => {
                     let p = children.as_mut().and_then(Iterator::next);
                     self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false);
@@ -964,11 +979,58 @@ impl GpuCompositor {
         self.render_plan(&empty, None, false, true)
     }
 
+    /// Run full-canvas effects without reading pixels back to the CPU.
+    fn apply_canvas_fx(&mut self, ops: &[filmcraft_render::gpufx::FxOp], size: (u32, u32)) -> bool {
+        let Some((_, canvas, _)) = &self.accum else {
+            return false;
+        };
+        let canvas = canvas.clone();
+        let src =
+            SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: size, size, color: filmcraft_color::ColorInfo::REC709, input: None };
+        let mut uniforms = Self::uniforms(&src, &filmcraft_geom::Affine::IDENTITY, 1.0, Blend::Normal, size);
+        uniforms[26] = 1.0;
+        let buffer = self.uniform_buffer(&uniforms);
+        let bind = |view: &wgpu::TextureView| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas-fx"),
+                layout: &self.layer_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
+                ],
+            })
+        };
+        let source = bind(&canvas);
+        let Some(stage) = self.fx.as_mut() else {
+            return false;
+        };
+        stage.begin_frame();
+        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, ops: ops.to_vec() };
+        let Some(job) = stage.job(&self.device, &self.queue, &fx, source, &self.dummy) else {
+            return false;
+        };
+        let destination = bind(&job.result);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("canvas-fx") });
+        stage.record(&mut enc, &job);
+        {
+            let mut pass = accum_pass(&mut enc, &canvas, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+            pass.set_pipeline(&self.layer_pipeline);
+            pass.set_bind_group(0, &destination, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        stage.end_frame();
+        true
+    }
+
     /// Export rendering: `plan` composited into the linear float accumulator and read back as
     /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
     /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
-        if matches!(plan, FramePlan::Composite { .. }) {
+        if matches!(plan, FramePlan::Composite { steps,.. } if steps.iter().any(|s|matches!(s,PlanStep::Transition{..}))) {
             return None;
         }
         let t = std::time::Instant::now();

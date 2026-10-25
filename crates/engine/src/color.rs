@@ -73,10 +73,18 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             apply_match,
         ),
         spec(
+            "lumetri.resetSelectiveBand",
+            "Reset Selective Colour Band",
+            &[],
+            r#"{"clip":id?,"band":"red"|"yellow"|"green"|"cyan"|"blue"|"magenta"}"#,
+            has_seq,
+            reset_selective_band,
+        ),
+        spec(
             "lumetri.setSection",
             "Toggle Lumetri Section",
             &[],
-            r#"{"clip":id?,"section":"basic"|"creative"|"curves"|"wheels"|"hsl"|"vignette","on":bool?}"#,
+            r#"{"clip":id?,"section":"basic"|"creative"|"curves"|"wheels"|"hsl"|"selective"|"vignette","on":bool?}"#,
             has_seq,
             set_section,
         ),
@@ -216,6 +224,31 @@ fn set_lut(s: &mut Session, p: &Value, param: &str) -> Result<Value> {
     Ok(json!({"clip": clip.0, "lut": r, "name": filmcraft_render::luts::label(Some(&s.project), &r)}))
 }
 
+fn reset_selective_band(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.resetSelectiveBand";
+    let band = str_p(p, "band").ok_or_else(|| bad(cmd, "need `band`"))?;
+    if !["red", "yellow", "green", "cyan", "blue", "magenta"].contains(&band) {
+        return Err(bad(cmd, "unknown selective colour band"));
+    }
+    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    let def = filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri definition"))?;
+    let defaults = ["color", "hue", "sat", "luma", "range"]
+        .into_iter()
+        .map(|field| {
+            let id = format!("selective_{band}_{field}");
+            let value = def.param(&id).ok_or_else(|| bad(cmd, "missing band parameter"))?.default.clone();
+            Ok((id, filmcraft_project::Param::new(value)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    s.edit_sequence("Reset Selective Colour Band", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let effect = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+        effect.params.extend(defaults);
+        Ok(())
+    })?;
+    Ok(json!({"clip": clip.0, "band": band}))
+}
+
 fn set_section(s: &mut Session, p: &Value) -> Result<Value> {
     let sec = str_p(p, "section").ok_or_else(|| bad("lumetri.setSection", "need `section`"))?;
     let param = match sec.to_ascii_lowercase().as_str() {
@@ -224,6 +257,7 @@ fn set_section(s: &mut Session, p: &Value) -> Result<Value> {
         "curves" => "curves_on",
         "wheels" | "color wheels" | "color wheels & match" => "wheels_on",
         "hsl" | "hsl secondary" => "hsl_on",
+        "selective" | "selective colour" => "selective_on",
         "vignette" => "vignette_on",
         o => return Err(bad("lumetri.setSection", format!("unknown section `{o}`"))),
     };
