@@ -2876,6 +2876,7 @@
 	Cleared {n} shortcut(s) of {command}	「{command}」のショートカットを {n} 個クリアしました
 	No export preset named `{name}`	「{name}」という名前の書き出しプリセットはありません
 	Open a sequence to export	書き出すシーケンスを開いてください
+	Create a sequence to export	書き出すシーケンスを作成してください
 	Destinations	出力先
 	Media File	メディアファイル
 	Queue ({n})	キュー ({n})
@@ -2946,6 +2947,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	シーケンス、{w}x{h}、{fps} fps、{rate} Hz
 	Estimated file size: {size}	推定ファイルサイズ: {size}
 	Send to Queue	キューに送信
+	Queue All	すべてキューに追加
+	Custom (the settings shown)	カスタム（表示中の設定）
+	the entire sequence	シーケンス全体
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	各シーケンスのイン/アウト、なければ全体（カスタム範囲やワークエリアは 1 つのシーケンスのものです）
+	Adds all {n} sequences to the export queue:	{n} 個のシーケンスすべてを書き出しキューに追加します：
+	• File name: each sequence's own name (numbered when names repeat)	• ファイル名：各シーケンスの名前（重複時は番号付き）
+	• Location: {location}	• 場所：{location}
+	• Preset: {preset}	• プリセット：{preset}
+	• Range: {range}	• 範囲：{range}
+	Added {n} sequences to the export queue	{n} 個のシーケンスを書き出しキューに追加しました
 	Exporting {path}	{path} を書き出し中
 	Added to the export queue	書き出しキューに追加しました
 	Preset Manager	プリセットマネージャー

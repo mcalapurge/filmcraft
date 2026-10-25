@@ -33,6 +33,66 @@ fn hostile_export_ranges_are_rejected_without_panicking() {
     }
 }
 
+/// Export starts on the active sequence, else the first open one, else the first created (by
+/// name when the creation order ties), and can queue any sequence without opening it.
+#[test]
+fn export_picks_the_default_sequence_and_takes_any_other() {
+    let mut s = demo();
+    let main = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "Zeta"})).unwrap();
+    let zeta = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "alpha"})).unwrap();
+    let alpha = s.state.active_sequence.unwrap();
+    let default = |s: &mut Session| s.execute("export.sequences", json!({})).unwrap()["default"].as_u64();
+    assert_eq!(default(&mut s), Some(alpha.0), "the active sequence");
+    s.state.active_sequence = None;
+    s.state.open_sequences = vec![zeta, alpha];
+    assert_eq!(default(&mut s), Some(zeta.0), "the first open sequence");
+    s.state.open_sequences.clear();
+    assert_eq!(default(&mut s), Some(main.0), "the first created");
+    let all: Vec<_> = s.project.sequences().map(|i| i.id).collect();
+    for id in &all {
+        std::sync::Arc::make_mut(&mut s.project).item_mut(*id).unwrap().created = 0;
+    }
+    assert_eq!(default(&mut s), Some(alpha.0), "alphabetically first when the creation order ties");
+    let v = s.execute("export.sequences", json!({})).unwrap();
+    let names: Vec<&str> = v["sequences"].as_array().unwrap().iter().map(|q| q["name"].as_str().unwrap()).collect();
+    assert_eq!(names.first(), Some(&"alpha"));
+    assert_eq!(names.len(), all.len());
+
+    // nothing open: the queue still takes a named sequence, and the default without one
+    let dir = std::env::temp_dir().join(format!("fc-export-seq-{}", std::process::id()));
+    let v = s.execute("export.queue.add", json!({"sequence": zeta.0, "format": "wav", "path": dir.join("z.wav")})).unwrap();
+    assert_eq!(v["items"][0]["sequenceName"], "Zeta");
+    let v = s.execute("export.queue.add", json!({"format": "wav", "path": dir.join("a.wav")})).unwrap();
+    assert_eq!(v["items"][1]["sequenceName"], "alpha");
+    assert!(s.execute("export.queue.add", json!({"sequence": 999_999, "format": "wav", "path": dir.join("x.wav")})).is_err());
+    assert!(s.execute("export.queue.add", json!({"sequence": u64::MAX, "format": "wav", "path": dir.join("x.wav")})).is_err());
+
+    // no sequences at all: disabled, not a panic
+    let mut empty = Session::default();
+    assert!(empty.execute("export.queue.add", json!({"format": "wav", "path": dir.join("e.wav")})).is_err());
+    assert_eq!(empty.execute("export.sequences", json!({})).unwrap()["default"], Value::Null);
+}
+
+/// Queue All into one folder: each sequence is named after itself, and same-named sequences are
+/// numbered instead of overwriting each other.
+#[test]
+fn queueing_several_sequences_into_a_folder_keeps_every_file() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Cut"})).unwrap();
+    let a = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "Cut"})).unwrap();
+    let b = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "Promo"})).unwrap();
+    let c = s.state.active_sequence.unwrap();
+    let dir = format!("{}/", std::env::temp_dir().join(format!("fc-queue-all-{}", std::process::id())).display());
+    let v = s.execute("export.queue.add", json!({"sequences": [a.0, b.0, c.0], "format": "wav", "path": dir, "range": "entire"})).unwrap();
+    let paths: Vec<String> =
+        v["items"].as_array().unwrap().iter().map(|i| Path::new(i["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert_eq!(paths, ["Cut.wav", "Cut_2.wav", "Promo.wav"]);
+}
+
 /// #1544: an export started without `wait` says where it can be followed: `jobs.list` (not
 /// `export.queue.list`, which lists the Export Queue only) and `jobs.cancel` to stop it.
 #[test]

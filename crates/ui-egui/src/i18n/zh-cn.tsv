@@ -2870,6 +2870,7 @@
 	Cleared {n} shortcut(s) of {command}	已清除 {command} 的 {n} 个快捷键
 	No export preset named `{name}`	没有名为`{name}`的导出预设
 	Open a sequence to export	打开一个序列以导出
+	Create a sequence to export	请创建要导出的序列
 	Destinations	目标
 	Media File	媒体文件
 	Queue ({n})	队列（{n}）
@@ -2940,6 +2941,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	序列，{w}x{h}，{fps} fps，{rate} Hz
 	Estimated file size: {size}	估计文件大小：{size}
 	Send to Queue	发送到队列
+	Queue All	全部加入队列
+	Custom (the settings shown)	自定义（当前显示的设置）
+	the entire sequence	整个序列
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	每个序列的入点/出点，若无则整个序列（自定义范围或工作区只属于一个序列）
+	Adds all {n} sequences to the export queue:	将全部 {n} 个序列添加到导出队列：
+	• File name: each sequence's own name (numbered when names repeat)	• 文件名：各序列自己的名称（重名时编号）
+	• Location: {location}	• 位置：{location}
+	• Preset: {preset}	• 预设：{preset}
+	• Range: {range}	• 范围：{range}
+	Added {n} sequences to the export queue	已将 {n} 个序列添加到导出队列
 	Exporting {path}	正在导出 {path}
 	Added to the export queue	已添加到导出队列
 	Preset Manager	预设管理器

@@ -2884,6 +2884,7 @@
 	Cleared {n} shortcut(s) of {command}	{n} pintasan dari {command} dihapus
 	No export preset named `{name}`	Tidak ada preset ekspor bernama `{name}`
 	Open a sequence to export	Buka sekuens untuk mengekspor
+	Create a sequence to export	Buat sekuens untuk diekspor
 	Destinations	Tujuan
 	Media File	Berkas Media
 	Queue ({n})	Antrean ({n})
@@ -2954,6 +2955,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sekuens, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Perkiraan ukuran berkas: {size}
 	Send to Queue	Kirim ke Antrean
+	Queue All	Antrekan semua
+	Custom (the settings shown)	Kustom (pengaturan yang ditampilkan)
+	the entire sequence	seluruh sekuens
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	In/Out tiap sekuens, jika tidak ada seluruhnya (rentang kustom atau area kerja milik satu sekuens)
+	Adds all {n} sequences to the export queue:	Menambahkan semua {n} sekuens ke antrean ekspor:
+	• File name: each sequence's own name (numbered when names repeat)	• Nama file: nama tiap sekuens (diberi nomor jika sama)
+	• Location: {location}	• Lokasi: {location}
+	• Preset: {preset}	• Preset: {preset}
+	• Range: {range}	• Rentang: {range}
+	Added {n} sequences to the export queue	{n} sekuens ditambahkan ke antrean ekspor
 	Exporting {path}	Mengekspor {path}
 	Added to the export queue	Ditambahkan ke antrean ekspor
 	Preset Manager	Manajer Preset

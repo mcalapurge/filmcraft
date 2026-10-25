@@ -2876,6 +2876,7 @@
 	Cleared {n} shortcut(s) of {command}	Cancellate {n} scorciatoie di {command}
 	No export preset named `{name}`	Nessun predefinito di esportazione chiamato `{name}`
 	Open a sequence to export	Apri una sequenza da esportare
+	Create a sequence to export	Crea una sequenza da esportare
 	Destinations	Destinazioni
 	Media File	File multimediale
 	Queue ({n})	Coda ({n})
@@ -2942,6 +2943,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sequenza, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Dimensione file stimata: {size}
 	Send to Queue	Invia alla coda
+	Queue All	Accoda tutto
+	Custom (the settings shown)	Personalizzato (le impostazioni mostrate)
+	the entire sequence	l'intera sequenza
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	l'attacco/stacco di ogni sequenza, altrimenti tutta (un intervallo personalizzato o area di lavoro appartiene a una sola sequenza)
+	Adds all {n} sequences to the export queue:	Aggiunge tutte le {n} sequenze alla coda di esportazione:
+	• File name: each sequence's own name (numbered when names repeat)	• Nome file: quello di ogni sequenza (numerato se si ripete)
+	• Location: {location}	• Posizione: {location}
+	• Preset: {preset}	• Predefinito: {preset}
+	• Range: {range}	• Intervallo: {range}
+	Added {n} sequences to the export queue	{n} sequenze aggiunte alla coda di esportazione
 	Exporting {path}	Esportazione di {path}
 	Added to the export queue	Aggiunto alla coda di esportazione
 	Preset Manager	Gestione predefiniti

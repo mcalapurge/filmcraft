@@ -2890,6 +2890,7 @@
 	Cleared {n} shortcut(s) of {command}	Se borraron {n} atajo(s) de {command}
 	No export preset named `{name}`	No hay ningún ajuste preestablecido de exportación llamado `{name}`
 	Open a sequence to export	Abre una secuencia para exportar
+	Create a sequence to export	Crea una secuencia para exportar
 	Destinations	Destinos
 	Media File	Archivo multimedia
 	Queue ({n})	Cola ({n})
@@ -2960,6 +2961,16 @@
 	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Secuencia, {w}x{h}, {fps} fps, {rate} Hz
 	Estimated file size: {size}	Tamaño de archivo estimado: {size}
 	Send to Queue	Enviar a la cola
+	Queue All	Poner todo en cola
+	Custom (the settings shown)	Personalizado (los ajustes mostrados)
+	the entire sequence	la secuencia completa
+	each sequence's In/Out, else all of it (a custom range or work area belongs to one sequence)	la entrada/salida de cada secuencia, o toda si no tiene (un rango personalizado o área de trabajo pertenece a una sola secuencia)
+	Adds all {n} sequences to the export queue:	Añade las {n} secuencias a la cola de exportación:
+	• File name: each sequence's own name (numbered when names repeat)	• Nombre de archivo: el de cada secuencia (numerado si se repite)
+	• Location: {location}	• Ubicación: {location}
+	• Preset: {preset}	• Ajuste preestablecido: {preset}
+	• Range: {range}	• Rango: {range}
+	Added {n} sequences to the export queue	Se añadieron {n} secuencias a la cola de exportación
 	Exporting {path}	Exportando {path}
 	Added to the export queue	Añadido a la cola de exportación
 	Preset Manager	Administrador de ajustes preestablecidos
