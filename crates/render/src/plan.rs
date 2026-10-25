@@ -412,10 +412,9 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
 /// it is in, instead of being rendered to an image on the CPU first. Compositing its layers one
 /// by one over what is below gives the same picture as compositing them together first only when
 /// they all blend Normal, and the frame must be one that plans as layers in the same colour
-/// pipeline.
+/// pipeline. (Its frame size may differ: [`push_item`] checks that every layer stays inside it.)
 fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick) -> bool {
     nested.settings.color == seq.settings.color
-        && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && layered_at(project, nested, ft)
         && !nested.video_tracks.iter().any(|tr| tr.enabled && tr.transitions.iter().any(|t| t.range().contains(ft) && !simple_transition(&t.effect.effect)))
         && nested.video_tracks.iter().filter(|tr| tr.enabled).all(|tr| {
@@ -446,6 +445,10 @@ fn push_item(
     }
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
     let ft = item.source_time_at(t);
+    let ft = match project.item(item.item).map(|p| &p.kind) {
+        Some(ItemKind::Sequence(nested)) => crate::nest_time(seq, nested, ft),
+        _ => ft,
+    };
     let mt = item.effect_time_at(t);
     let (op, own) = crate::opacity_blend(item, mt);
     let bl = blend.unwrap_or(own);
@@ -468,9 +471,10 @@ fn push_item(
         }
         return;
     }
-    // A nested sequence that is only shown (no effects, untransformed, fully opaque, blending
-    // Normal) contributes its own layers: the compositor draws them like the clips of this
-    // sequence, with no CPU pass over the nested sequence. Its captions are part of its picture.
+    // A nested sequence that is only shown (no effects, fully opaque, blending Normal; Motion may
+    // move, scale or rotate it) contributes its own layers: the compositor draws them like the
+    // clips of this sequence, placed by the nest's Motion, with no CPU pass over the nested
+    // sequence. Its captions are part of its picture.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && item.multicam_angle(nested).is_none()
@@ -478,21 +482,11 @@ fn push_item(
         && !item.has_opacity_masks()
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft)
+        && let Some(layers) = nest_layers(project, seq, item, nested, ft, mt, opts, sources, nest)
     {
-        push_tracks(project, nested, ft, opts, sources, nest + 1, out);
-        if out.exhausted {
-            return;
-        }
-        let (w, h) = output_size(nested, opts.scale);
-        for o in crate::caption_overlays(nested, ft, w, h) {
-            out.push(PlanLayer::new(
-                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
-                Affine::translate(o.x as f64, o.y as f64),
-                1.0,
-                Blend::Normal,
-            ));
+        for l in layers {
+            out.push(l);
         }
         return;
     }
@@ -605,6 +599,56 @@ fn push_item(
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
     }
+}
+
+/// The layers of a plain nested sequence ([`nest_is_plain`]) at its time `ft`, with its captions,
+/// placed in the output of `seq` by the nest's Motion. None when they cannot stand in for the
+/// nest's picture: the plan of the nest needs more than layers, or a layer reaches outside the
+/// nested frame (rendered as a picture, the nest crops it there).
+#[allow(clippy::too_many_arguments)]
+fn nest_layers(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    nested: &Sequence,
+    ft: Tick,
+    mt: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+    nest: u32,
+) -> Option<Vec<PlanLayer>> {
+    let (w, h) = output_size(nested, opts.scale);
+    let mut inner = PlanStack::default();
+    push_tracks(project, nested, ft, opts, sources, nest + 1, &mut inner);
+    for o in crate::caption_overlays(nested, ft, w, h) {
+        inner.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)), Affine::translate(o.x as f64, o.y as f64), 1.0, Blend::Normal));
+    }
+    if inner.exhausted {
+        return None;
+    }
+    let FramePlan::Layers { layers, .. } = inner.finish(w, h) else { return None };
+    // Half a pixel of slack: a layer that exactly fills the nest lands on its edges.
+    let inside = |l: &PlanLayer| {
+        let (lw, lh) = l.size();
+        [(0.0, 0.0), (lw as f64, 0.0), (0.0, lh as f64), (lw as f64, lh as f64)].into_iter().all(|(x, y)| {
+            let p = l.matrix.apply(filmcraft_geom::Vec2::new(x, y));
+            p.x >= -0.5 && p.y >= -0.5 && p.x <= w as f64 + 0.5 && p.y <= h as f64 + 0.5
+        })
+    };
+    if !layers.iter().all(inside) {
+        return None;
+    }
+    // nested output pixels (at the render scale) → this sequence's output pixels
+    let motion = motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt);
+    if near_identity(&motion) {
+        return Some(layers);
+    }
+    let s = f64::from(opts.scale);
+    if s <= 0.0 {
+        return None;
+    }
+    let place = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
+    Some(layers.into_iter().map(|l| PlanLayer { matrix: place.then_apply(&l.matrix), ..l }).collect())
 }
 
 fn near_identity(m: &Affine) -> bool {

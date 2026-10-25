@@ -324,12 +324,9 @@ fn a_plain_nest_is_planned_as_its_own_layers_and_looks_the_same() {
 fn a_nest_that_is_not_plain_is_still_drawn_right() {
     let t = FrameRate::FPS_24.tick_of(20);
     // each of these keeps the nest one layer (rendered on the CPU), and the plan matches the reference
-    let cases: [(&str, fn(&mut Rig, ItemId, ItemId, ClipId)); 5] = [
+    let cases: [(&str, fn(&mut Rig, ItemId, ItemId, ClipId)); 4] = [
         ("half-transparent nest", |r, _, outer, nest| {
             r.clip(outer, nest).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
-        }),
-        ("moved nest", |r, _, outer, nest| {
-            r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
         }),
         ("nest with an effect", |r, _, outer, nest| {
             let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
@@ -361,4 +358,93 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
         let w = worst(&r.planned(outer, t), &r.frame(outer, t));
         assert!(w < 0.01, "{what}: plan and reference differ by {w}");
     }
+}
+
+#[test]
+fn a_scaled_or_moved_nest_is_still_planned_as_its_own_layers() {
+    // e.g. a 2160x3840 nest at 50 % in a 1080x1920 sequence: drawn by the compositor, not
+    // rendered to an image on the CPU first (that made playback of such nests choppy)
+    let t = FrameRate::FPS_24.tick_of(20);
+    let cases: [(&str, fn(&mut Rig, ItemId, ItemId, ClipId)); 4] = [
+        ("scaled down", |r, _, outer, nest| {
+            r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+        }),
+        ("moved and rotated", |r, _, outer, nest| {
+            let m = r.clip(outer, nest).effect_mut("motion").unwrap();
+            m.params.get_mut("scale").unwrap().value = ParamValue::Float(40.0);
+            m.params.get_mut("rotation").unwrap().value = ParamValue::Float(30.0);
+        }),
+        ("in a smaller sequence", |r, inner, outer, nest| {
+            let (w, h) = {
+                let i = &r.p.sequence(inner).unwrap().settings;
+                (i.width / 2, i.height / 2)
+            };
+            let o = &mut r.p.sequence_mut(outer).unwrap().settings;
+            (o.width, o.height) = (w, h);
+            r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+        }),
+        ("in a smaller sequence, not scaled (cropped by the frame)", |r, inner, outer, _| {
+            let (w, h) = {
+                let i = &r.p.sequence(inner).unwrap().settings;
+                (i.width / 2, i.height / 2)
+            };
+            let o = &mut r.p.sequence_mut(outer).unwrap().settings;
+            (o.width, o.height) = (w, h);
+        }),
+    ];
+    for (what, change) in cases {
+        let mut r = Rig::new();
+        let (inner, outer, nest) = two_layer_nest(&mut r);
+        let under = r.matte([0.0, 1.0, 0.0, 1.0], 64, 64);
+        let rate = FrameRate::FPS_24;
+        let nest_clip = r.p.sequence_mut(outer).unwrap().video_tracks[0].items.remove(0);
+        let mut below = r.p.make_track_item(under, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+        below.scale_to_frame = true;
+        let s = r.p.sequence_mut(outer).unwrap();
+        s.video_tracks[0].items.push(below);
+        s.video_tracks[1].items.push(nest_clip);
+        change(&mut r, inner, outer, nest);
+        assert_eq!(layer_count(&r, outer, t), Some(3), "{what}: the matte and the nest's two clips");
+        let (planned, reference) = (r.planned(outer, t), r.frame(outer, t));
+        // resampled once instead of twice: edges and fine detail differ a little
+        let mean = planned.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).sum::<f32>() / planned.px.len().max(1) as f32;
+        assert!(mean < 0.01, "{what}: plan and reference differ by {mean} on average");
+    }
+}
+
+#[test]
+fn a_nest_whose_clip_reaches_outside_its_frame_is_rendered_as_a_picture() {
+    // the nest crops its clips at its frame; drawn layer by layer the clip would spill out
+    let mut r = Rig::new();
+    let (inner, outer, nest) = two_layer_nest(&mut r);
+    let top = &mut r.p.sequence_mut(inner).unwrap().video_tracks[1].items[0];
+    top.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(400.0);
+    r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    let t = FrameRate::FPS_24.tick_of(20);
+    assert_eq!(layer_count(&r, outer, t), Some(1), "one image of the nest");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+}
+
+#[test]
+fn a_nest_that_runs_a_fraction_of_a_frame_past_its_sequence_shows_its_last_frame() {
+    // Cut on a 23.976 grid, then the outer sequence set to 30 fps: the nest is 71 frames at 30 fps
+    // but its clip lasts 57 frames at 23.976 (a third of a 30 fps frame longer), so outer frame 71
+    // asks the nest for the instant its sequence ends. It used to draw nothing there: a flash of
+    // black at the cut.
+    let mut r = Rig::new();
+    let red = r.matte(RED, 64, 36);
+    let inner = r.seq("inner", 64, 36, FrameRate::FPS_30);
+    r.put(inner, red, 71);
+    let outer = r.seq("outer", 64, 36, FrameRate::FPS_30);
+    let rate = FrameRate::FPS_23_976;
+    let ti = r.p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(57)), rate).unwrap();
+    r.p.sequence_mut(outer).unwrap().video_tracks[0].items.push(ti);
+    let t = FrameRate::FPS_30.tick_of(71);
+    assert!(r.p.sequence(outer).unwrap().video_tracks[0].item_at(t).is_some(), "the nest still covers frame 71");
+    for img in [r.frame(outer, t), r.planned(outer, t)] {
+        assert!(close(img.get(32, 18), RED), "frame 71 shows the nest's last frame, not {:?}", img.get(32, 18));
+    }
+    // past the end by more than a frame (not a rounding overhang) stays empty
+    let s = &r.p.sequence(inner).unwrap().clone();
+    assert_eq!(nest_time(r.p.sequence(outer).unwrap(), s, FrameRate::FPS_30.tick_of(73)), FrameRate::FPS_30.tick_of(73));
 }

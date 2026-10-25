@@ -576,6 +576,20 @@ pub(crate) fn video_source_time(item: &TrackItem, t: Tick, media_rate: filmcraft
     media_rate.tick_of(media_rate.frame_at(ft)).clamp(item.source_in.min(ft), ft)
 }
 
+/// The time a nest shows inside its sequence `nested` for its source time `ft`. A nest that runs
+/// past the end of its sequence by less than a frame (its cuts fall between frames, as after the
+/// outer sequence `seq` changed frame rate) shows the sequence's last frame there, as a media
+/// clip shows its last frame, instead of an empty frame that flashes at the cut.
+pub(crate) fn nest_time(seq: &Sequence, nested: &Sequence, ft: Tick) -> Tick {
+    let end = nested.duration();
+    let rate = nested.settings.frame_rate;
+    let slack = rate.frame_duration().max(seq.settings.frame_rate.frame_duration());
+    if end <= Tick::ZERO || ft < end || ft >= end + slack {
+        return ft;
+    }
+    rate.tick_of(rate.frame_at(end - Tick(1)))
+}
+
 /// The linear image of a media clip's `frame`, colour managed, and blended (or, with Optical Flow,
 /// motion interpolated) with the next frame when the clip's speed asks for it.
 #[allow(clippy::too_many_arguments)]
@@ -615,6 +629,7 @@ pub(crate) fn base_layer(
             media_image(project, seq, item, t, &src, &frame, n, want)
         }
         ItemKind::Sequence(nested) => {
+            let ft = nest_time(seq, nested, ft);
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
             match item.multicam_angle(nested) {
                 // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
