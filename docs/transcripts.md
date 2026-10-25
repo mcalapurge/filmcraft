@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `then` (commands to run once the transcripts are in). One undo step. On the web it runs as a background job (`{"job": id}`). |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -43,7 +43,7 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are **optional features**, off by default on the desktop:
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
   apps, where it also enables downloads): candle inference.
@@ -57,6 +57,14 @@ on, `file.import` reports the same reason as a `transcription: …` entry in its
 Without `speech-download`, `transcript.downloadModel` is disabled the same way. Transcripts can
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
+
+The **web build** always has speech-to-text. Whisper runs in a Web Worker on the same wasm module,
+and models are downloaded into the browser's private storage (OPFS) the first time they're needed
+([docs/web.md](web.md#speech-to-text)). There, `transcript.generate` returns `{"job": id}` at once
+and the transcripts are applied (one undo step) when the job finishes; a host that works this way
+implements `filmcraft_engine::transcript::SpeechHost` and installs it in `Session::speech_host`.
+Commands that need the transcript afterwards go in `then` (`[{"command": id, "params": {…}}]`),
+which runs them once the transcripts are in, in every build. One job takes at most 2 hours of audio.
 
 ### Models
 

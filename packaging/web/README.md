@@ -36,7 +36,10 @@ forever. Only `index.html` needs revalidation.
 - **No special isolation headers:** FilmCraft doesn't use `SharedArrayBuffer`, so it doesn't
   need `Cross-Origin-Opener-Policy` or `Cross-Origin-Embedder-Policy`. If your site already sends
   COEP `require-corp`, also send `Cross-Origin-Resource-Policy: same-origin` (or `cross-origin`
-  when the files live on a CDN) on the app's files.
+  when the files live on a CDN) on the app's files, including `speech-worker.js`.
+- **Speech models:** Transcribe downloads Whisper models from `https://huggingface.co`, which
+  redirects to its file CDN. If your site sends a `Content-Security-Policy`, its `connect-src`
+  must allow those hosts, and `worker-src` must allow `'self'` for `speech-worker.js`.
 
 nginx example:
 

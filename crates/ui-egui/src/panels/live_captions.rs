@@ -136,16 +136,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     let mut actions: Vec<(String, Value)> = Vec::new();
     let has_transcript = !app.transcript_cache.content(&app.session).words.is_empty();
-    let can_transcribe = app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available();
+    let can_transcribe = filmcraft_engine::transcript::can_transcribe(&app.session).is_ok();
     let gen_enabled = has_transcript || can_transcribe;
     let track_idx = current_track(ui, &seq.caption_tracks);
     let track = track_idx.and_then(|i| seq.caption_tracks.get(i));
     let words = app.ui.live_captions.words.clamp(1, 4);
     let generate = move |actions: &mut Vec<(String, Value)>| {
-        if !has_transcript {
-            actions.push(("transcript.generate".into(), json!({})));
+        let create = json!({"maxWords": words, "source": "transcript"});
+        if has_transcript {
+            actions.push(("captions.createLive".into(), create));
+        } else {
+            // `then`: a transcription that runs as a background job (web) makes the captions when it ends
+            actions.push(("transcript.generate".into(), json!({"then": [{"command": "captions.createLive", "params": create}]})));
         }
-        actions.push(("captions.createLive".into(), json!({"maxWords": words, "source": "transcript"})));
     };
 
     let Some((ti, tr)) = track_idx.zip(track) else {

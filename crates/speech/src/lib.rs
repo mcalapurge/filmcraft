@@ -20,6 +20,8 @@ pub mod diarize;
 pub mod mel;
 pub mod models;
 pub mod vad;
+#[cfg(test)]
+mod wasm_clock_tests;
 #[cfg(feature = "whisper")]
 pub mod whisper;
 

@@ -8,8 +8,13 @@
 //! test installed one, else the Whisper model named by `model` from `<data dir>/models` (needs the
 //! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
+//!
+//! A host without threads (the web build) installs a [`SpeechHost`] instead: `transcript.generate`
+//! then returns `{"job": id}` at once, [`poll`] reads the audio a block at a time and hands it to
+//! the host, and the transcripts are applied when the host finishes the job.
 
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -60,15 +65,16 @@ fn has_transcripts(s: &Session) -> std::result::Result<(), String> {
 pub(crate) const NO_SPEECH: &str =
     "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead";
 
-/// `transcript.generate` can run: a host installed a transcriber or the build has speech-to-text
-/// (#97: it reported enabled and then always failed).
-pub(crate) fn can_transcribe(s: &Session) -> std::result::Result<(), String> {
-    if s.transcriber.is_some() || speech_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
+/// `transcript.generate` can run: a host installed a transcriber or a speech host, or the build
+/// has speech-to-text (#97: it reported enabled and then always failed).
+pub fn can_transcribe(s: &Session) -> std::result::Result<(), String> {
+    if s.transcriber.is_some() || s.speech_host.is_some() || speech_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
 }
 
-/// `transcript.downloadModel` can run: built with `speech-download` (#98).
-fn can_download(_: &Session) -> std::result::Result<(), String> {
-    if cfg!(feature = "speech-download") {
+/// `transcript.downloadModel` can run: a speech host downloads models, or the build has
+/// `speech-download` (#98).
+fn can_download(s: &Session) -> std::result::Result<(), String> {
+    if s.speech_host.is_some() || cfg!(feature = "speech-download") {
         Ok(())
     } else {
         Err("model downloads are not available in this build (built without the `speech-download` feature)".into())
@@ -149,7 +155,6 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     if items.is_empty() {
         return Err(bad("transcript.generate", "nothing to transcribe (pass `items`, select clips, or open a sequence with audio)"));
     }
-    let t = transcriber(s, p)?;
     // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
     let ma = &s.prefs.media_analysis;
     let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
@@ -161,6 +166,17 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
     };
+    let then = then_p(p)?;
+    if s.transcriber.is_none()
+        && let Some(host) = s.speech_host.clone()
+    {
+        let model = model_p(s, p)?;
+        let n = items.len();
+        let label = format!("Transcribe ({n} clip{})", if n == 1 { "" } else { "s" });
+        let id = start_host_job(s, host.as_ref(), label, model, items.clone(), opts, then);
+        return Ok(json!({"job": id, "items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "model": model.id, "poll": "jobs.list", "cancel": "jobs.cancel"}));
+    }
+    let t = transcriber(s, p)?;
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
     for item in items {
@@ -185,7 +201,306 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"items": report, "skipped": skipped}))
+    let then = run_then(s, then);
+    Ok(json!({"items": report, "skipped": skipped, "then": then}))
+}
+
+/// `then`: commands to run once the transcripts are in (`[{"command": id, "params": {…}}]`), so a
+/// caller that needs the transcript works the same whether the transcription ran in the command
+/// or as a [`SpeechHost`] job (Live Captions: transcribe, then `captions.createLive`).
+fn then_p(p: &Value) -> Result<Vec<(String, Value)>> {
+    let Some(list) = p.get("then") else { return Ok(Vec::new()) };
+    let list = list.as_array().ok_or_else(|| bad("transcript.generate", "`then` must be a list of {\"command\", \"params\"}"))?;
+    let mut out = Vec::new();
+    for c in list.iter().take(MAX_THEN) {
+        let id = c["command"].as_str().ok_or_else(|| bad("transcript.generate", "each `then` entry needs a `command`"))?;
+        if id == "transcript.generate" {
+            return Err(bad("transcript.generate", "`then` can't run transcript.generate"));
+        }
+        out.push((id.to_string(), c.get("params").cloned().unwrap_or_else(|| json!({}))));
+    }
+    Ok(out)
+}
+
+/// More follow-up commands than any caller needs.
+const MAX_THEN: usize = 16;
+
+/// Run the `then` commands; each one's result or error, in order.
+fn run_then(s: &mut Session, then: Vec<(String, Value)>) -> Vec<Value> {
+    then.into_iter()
+        .map(|(id, params)| match s.execute(&id, params) {
+            Ok(r) => json!({"command": id, "result": r}),
+            Err(e) => {
+                s.error_toast(&id, e.to_string());
+                json!({"command": id, "error": e.to_string()})
+            }
+        })
+        .collect()
+}
+
+/// The catalogue model named by `model`, else Settings ▸ Media Analysis & Transcription ▸ Speech
+/// model.
+fn model_p(s: &Session, p: &Value) -> Result<&'static filmcraft_speech::models::ModelInfo> {
+    let id = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
+    filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Speech hosts: transcription as a background job (the web build's Web Worker)
+// ---------------------------------------------------------------------------------------------
+
+/// Where a job's outcome goes (as in [`crate::Job::result`]).
+pub type JobResult = Arc<Mutex<Option<std::result::Result<filmcraft_export::Report, String>>>>;
+
+/// A host that runs speech-to-text away from the UI thread and keeps its own models (the web
+/// build: a Web Worker, models in OPFS). Installed in [`Session::speech_host`].
+pub trait SpeechHost: Send + Sync {
+    /// Whether catalogue model `id` is downloaded and verified.
+    fn installed(&self, id: &str) -> bool;
+    /// Run `job` in the background: download its model unless installed, then transcribe each
+    /// buffer of `job.audio` in order. The host updates `job.progress`, stores one transcript per
+    /// buffer in `job.transcripts` and the outcome in `job.result`, then sets
+    /// `job.progress.finished`. A job with no audio only downloads.
+    fn start(&self, job: SpeechJob);
+    /// Stop job `id`, queued or running; the host finishes it as stopped.
+    fn cancel(&self, id: u64);
+}
+
+/// A transcription (or model download) handed to a [`SpeechHost`].
+pub struct SpeechJob {
+    pub id: u64,
+    pub model: &'static filmcraft_speech::models::ModelInfo,
+    /// Mono 16 kHz audio, one buffer per clip.
+    pub audio: Vec<Vec<f32>>,
+    pub options: Options,
+    pub progress: Arc<filmcraft_export::Progress>,
+    pub result: JobResult,
+    pub transcripts: Arc<Mutex<Option<Vec<Transcript>>>>,
+}
+
+/// Longest audio one host job takes: its samples are held in wasm memory twice (the UI thread
+/// reads them, the worker transcribes a copy), and a wasm page has 4 GB.
+pub const MAX_HOST_AUDIO_SECONDS: u64 = 2 * 3600;
+
+/// Audio read per step while a host job gathers its clips' audio (media bytes may still be
+/// loading on the web, so a block that can't be read yet is retried on the next [`poll`]).
+const READ_BLOCK_SECONDS: usize = 30;
+
+/// How long one [`poll`] spends reading audio.
+const READ_BUDGET: std::time::Duration = std::time::Duration::from_millis(15);
+
+/// A clip whose audio is being read for a host job.
+struct AudioRead {
+    item: ItemId,
+    samples: Vec<f32>,
+    len: usize,
+}
+
+/// A [`SpeechHost`] job: reading its audio, then running on the host; applied by [`poll`].
+pub struct PendingTranscript {
+    pub job: u64,
+    model: &'static filmcraft_speech::models::ModelInfo,
+    options: Options,
+    /// Clips still being read, in order, then the ones handed to the host.
+    reads: Vec<AudioRead>,
+    skipped: Vec<ItemId>,
+    started: bool,
+    transcripts: Arc<Mutex<Option<Vec<Transcript>>>>,
+    then: Vec<(String, Value)>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn finish(progress: &filmcraft_export::Progress, result: &JobResult, r: std::result::Result<filmcraft_export::Report, String>) {
+    match &r {
+        Ok(_) => {}
+        Err(e) => {
+            *lock(&progress.status) = e.clone();
+            *lock(&progress.error) = Some(e.clone());
+        }
+    }
+    *lock(result) = Some(r);
+    progress.finished.store(true, Ordering::Relaxed);
+}
+
+/// Queue a host job for `items` (none: only download `model`); returns its job id.
+fn start_host_job(
+    s: &mut Session,
+    host: &dyn SpeechHost,
+    label: String,
+    model: &'static filmcraft_speech::models::ModelInfo,
+    items: Vec<ItemId>,
+    options: Options,
+    then: Vec<(String, Value)>,
+) -> u64 {
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    let reads: Vec<AudioRead> = items.iter().map(|&item| AudioRead { item, samples: Vec::new(), len: 0 }).collect();
+    let pj = PendingTranscript { job: id, model, options, reads, skipped: Vec::new(), started: false, transcripts: Arc::default(), then };
+    if pj.reads.is_empty() {
+        *lock(&job.progress.status) = format!("Downloading {}", model.name);
+    } else {
+        *lock(&job.progress.status) = "Reading audio".into();
+    }
+    s.jobs.push(job);
+    s.transcript_jobs.push(pj);
+    if items.is_empty() {
+        // a download needs no audio: hand it over now
+        poll_one(s, host, s.transcript_jobs.len() - 1);
+    }
+    id
+}
+
+/// Read the audio of a pending job's clips for up to [`READ_BUDGET`]. Returns an error that ends
+/// the job (too long, unreadable).
+fn read_audio(s: &Session, pj: &mut PendingTranscript, progress: &filmcraft_export::Progress) -> std::result::Result<(), String> {
+    let sr = filmcraft_speech::SAMPLE_RATE as usize;
+    if pj.reads.iter().any(|r| r.len == 0) {
+        // first call: every clip's length (clips without audio are skipped)
+        let mut skipped = Vec::new();
+        for r in pj.reads.iter_mut() {
+            let dur = match s.project.item(r.item).map(|it| &it.kind) {
+                Some(ItemKind::Media(m)) => m.duration(),
+                _ => Tick(0),
+            };
+            let has_audio = s.source(r.item).is_some_and(|src| src.info().has_audio());
+            r.len = if has_audio { usize::try_from(dur.to_units_floor(sr as i64).max(0)).unwrap_or(0) } else { 0 };
+            if r.len == 0 {
+                skipped.push(r.item);
+            }
+        }
+        pj.reads.retain(|r| r.len > 0);
+        pj.skipped.extend(skipped);
+        let total: u64 = pj.reads.iter().map(|r| r.len as u64).sum();
+        if total > MAX_HOST_AUDIO_SECONDS * sr as u64 {
+            return Err(format!(
+                "{:.1} hours of audio is more than this build transcribes at once ({} hours); transcribe fewer clips at a time",
+                total as f64 / sr as f64 / 3600.0,
+                MAX_HOST_AUDIO_SECONDS / 3600
+            ));
+        }
+    }
+    let t0 = web_time::Instant::now();
+    'clips: for r in pj.reads.iter_mut() {
+        while r.samples.len() < r.len {
+            if t0.elapsed() >= READ_BUDGET {
+                break 'clips;
+            }
+            let Some(src) = s.source(r.item) else { return Err(format!("item {} has no media", r.item.0)) };
+            let start = r.samples.len();
+            let n = (READ_BLOCK_SECONDS * sr).min(r.len - start);
+            let _ = filmcraft_media::pending::take();
+            let block = src.audio(start as i64, n, sr as u32);
+            // the bytes are on their way: read this block again on the next poll
+            if filmcraft_media::pending::take() {
+                break 'clips;
+            }
+            let buf = block.map_err(|e| format!("can't read the audio of item {}: {e}", r.item.0))?;
+            let mut mono = filmcraft_speech::downmix(&buf.channels);
+            mono.resize(n, 0.0);
+            r.samples.extend_from_slice(&mono);
+        }
+    }
+    let total: usize = pj.reads.iter().map(|r| r.len).sum();
+    let read: usize = pj.reads.iter().map(|r| r.samples.len()).sum();
+    *lock(&progress.status) = format!("Reading audio {:.0}%", 100.0 * read as f64 / total.max(1) as f64);
+    Ok(())
+}
+
+/// Advance pending job `i`: read its audio, hand it to the host, stop it when cancelled.
+fn poll_one(s: &mut Session, host: &dyn SpeechHost, i: usize) {
+    let Some(id) = s.transcript_jobs.get(i).map(|pj| pj.job) else { return };
+    let Some(job) = s.jobs.iter().find(|j| j.id == id).cloned() else { return };
+    if job.progress.finished.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(mut pj) = (i < s.transcript_jobs.len()).then(|| s.transcript_jobs.remove(i)) else { return };
+    if job.progress.cancel.load(Ordering::Relaxed) {
+        if pj.started {
+            host.cancel(id);
+        } else {
+            finish(&job.progress, &job.result, Err("stopped".into()));
+        }
+        s.transcript_jobs.insert(i, pj);
+        return;
+    }
+    if !pj.started {
+        if let Err(e) = read_audio(s, &mut pj, &job.progress) {
+            finish(&job.progress, &job.result, Err(e));
+        } else if pj.reads.iter().all(|r| r.samples.len() >= r.len) {
+            if pj.reads.is_empty() && !pj.skipped.is_empty() {
+                finish(&job.progress, &job.result, Err("none of the clips has audio to transcribe".into()));
+            } else {
+                pj.started = true;
+                let audio = pj.reads.iter_mut().map(|r| std::mem::take(&mut r.samples)).collect();
+                host.start(SpeechJob {
+                    id,
+                    model: pj.model,
+                    audio,
+                    options: pj.options.clone(),
+                    progress: job.progress.clone(),
+                    result: job.result.clone(),
+                    transcripts: pj.transcripts.clone(),
+                });
+            }
+        }
+    }
+    s.transcript_jobs.insert(i, pj);
+}
+
+/// Advance [`SpeechHost`] jobs and apply the finished ones (one undo step each), then run their
+/// `then` commands. Called once per UI frame from [`Session::poll_persistence`].
+pub fn poll(s: &mut Session) {
+    let Some(host) = s.speech_host.clone() else { return };
+    let mut i = 0;
+    while i < s.transcript_jobs.len() {
+        poll_one(s, host.as_ref(), i);
+        let id = s.transcript_jobs[i].job;
+        let job = s.jobs.iter().find(|j| j.id == id).cloned();
+        if job.as_ref().is_some_and(|j| !j.progress.finished.load(Ordering::Relaxed)) {
+            i += 1;
+            continue;
+        }
+        let pj = s.transcript_jobs.remove(i);
+        let Some(job) = job else { continue };
+        let outcome = lock(&job.result).clone();
+        let transcripts = lock(&pj.transcripts).take();
+        match (outcome, transcripts) {
+            (Some(Ok(_)), Some(ts)) if !pj.reads.is_empty() => {
+                let done: Vec<(ItemId, Transcript)> = pj
+                    .reads
+                    .iter()
+                    .zip(ts)
+                    .map(|(r, mut t)| {
+                        t.normalize();
+                        (r.item, t)
+                    })
+                    .collect();
+                let words: usize = done.iter().map(|(_, t)| t.words.len()).sum();
+                let n = done.len();
+                let r = s.edit("Transcribe", move |pr, _| {
+                    for (i, t) in done {
+                        pr.transcripts.insert(i, Arc::new(t));
+                    }
+                    Ok(())
+                });
+                match r {
+                    Ok(_) => {
+                        s.toast(format!("Transcribed {n} clip{} ({words} words)", if n == 1 { "" } else { "s" }));
+                        run_then(s, pj.then);
+                    }
+                    Err(e) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
+                }
+            }
+            (Some(Ok(_)), _) if pj.reads.is_empty() && pj.skipped.is_empty() => s.toast(format!("Downloaded {}", pj.model.name)),
+            (Some(Err(e)), _) if e == "stopped" => {}
+            (Some(Err(e)), _) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
+            _ => {}
+        }
+    }
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -401,25 +716,39 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"track": tid.0, "captions": n}))
 }
 
-fn models(_: &mut Session, _: &Value) -> Result<Value> {
-    let dir = models_dir();
+fn models(s: &mut Session, _: &Value) -> Result<Value> {
+    let host = s.speech_host.clone();
+    // a speech host keeps its models itself (the web build: OPFS)
+    let dir = if host.is_some() { None } else { models_dir() };
     Ok(json!({
-        "available": filmcraft_speech::available(),
+        // whether the models can run here (an installed `Session::transcriber` doesn't use them)
+        "available": speech_available() || host.is_some(),
         "default": filmcraft_speech::models::DEFAULT_MODEL,
         "dir": dir.as_ref().map(|d| d.to_string_lossy().to_string()),
         "models": filmcraft_speech::models::catalogue().iter().map(|m| json!({
             "id": m.id, "name": m.name, "multilingual": m.multilingual, "description": m.description,
             "license": m.license, "source": m.source, "size": m.size(),
-            "installed": dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m)),
+            "installed": match &host {
+                Some(h) => h.installed(m.id),
+                None => dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m)),
+            },
         })).collect::<Vec<_>>(),
     }))
 }
 
-/// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
-/// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+/// Download a catalogue model into `<data dir>/models` (feature `speech-download`), or as a
+/// [`SpeechHost`] job (`{"job": id}`). Hosts show the size, source and licence
+/// (`transcript.models`) and ask before running this.
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
+    if let Some(host) = s.speech_host.clone() {
+        if host.installed(m.id) {
+            return Ok(json!({"model": m.id, "installed": true}));
+        }
+        let job = start_host_job(s, host.as_ref(), format!("Download {}", m.name), m, Vec::new(), Options::default(), Vec::new());
+        return Ok(json!({"model": m.id, "job": job, "poll": "jobs.list", "cancel": "jobs.cancel"}));
+    }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     #[cfg(feature = "speech-download")]
     {

@@ -114,6 +114,12 @@ pub async fn read(rel: &str) -> Option<Vec<u8>> {
     Some(js_sys::Uint8Array::new(&buf).to_vec())
 }
 
+/// A writable stream that replaces `rel` when closed (directories are created).
+pub async fn writable(rel: &str) -> Result<web_sys::FileSystemWritableFileStream, JsValue> {
+    let fh = file_handle(rel, true).await?;
+    JsFuture::from(fh.create_writable()).await?.dyn_into()
+}
+
 /// Remove a file (ignored when missing).
 pub async fn remove(rel: &str) {
     if let Ok((dir, name)) = parent(rel, false).await {

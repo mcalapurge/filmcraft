@@ -67,10 +67,14 @@ impl Whisper {
     /// `model.safetensors`).
     pub fn load(dir: &Path, id: &str) -> Result<Self, SpeechError> {
         let read = |n: &str| std::fs::read(dir.join(n)).map_err(|e| SpeechError::Model(format!("{}: {e}", dir.join(n).display())));
-        let cfg: Config = serde_json::from_slice(&read("config.json")?).map_err(|e| SpeechError::Model(format!("config.json: {e}")))?;
-        let gen_cfg: serde_json::Value = serde_json::from_slice(&read("generation_config.json")?).unwrap_or_default();
-        let tok = Tokenizer::from_json(&String::from_utf8_lossy(&read("tokenizer.json")?))?;
-        let weights = read("model.safetensors")?;
+        Self::from_bytes(id, &read("config.json")?, &read("generation_config.json")?, &read("tokenizer.json")?, read("model.safetensors")?)
+    }
+
+    /// Load a model from the bytes of its four files (hosts without a filesystem, e.g. the web).
+    pub fn from_bytes(id: &str, config: &[u8], generation_config: &[u8], tokenizer: &[u8], weights: Vec<u8>) -> Result<Self, SpeechError> {
+        let cfg: Config = serde_json::from_slice(config).map_err(|e| SpeechError::Model(format!("config.json: {e}")))?;
+        let gen_cfg: serde_json::Value = serde_json::from_slice(generation_config).unwrap_or_default();
+        let tok = Tokenizer::from_json(&String::from_utf8_lossy(tokenizer))?;
         let alignment_heads = alignment_heads(&cfg, &gen_cfg)?;
         let mut suppress: Vec<u32> =
             gen_cfg["suppress_tokens"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as u32)).collect()).unwrap_or_default();
@@ -275,7 +279,7 @@ impl Transcriber for Whisper {
             return Err(SpeechError::Cancelled);
         }
         let trace = std::env::var_os("FILMCRAFT_SPEECH_TRACE").is_some();
-        let clock = std::time::Instant::now();
+        let clock = web_time::Instant::now();
         let (frames, mel) = crate::mel::log_mel(&padded, n_mels);
         if trace {
             eprintln!("mel {:.3}s", clock.elapsed().as_secs_f64());

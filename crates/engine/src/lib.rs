@@ -492,6 +492,11 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Runs `transcript.generate` / `transcript.downloadModel` as background jobs (hosts without
+    /// threads: the web build's speech worker). None = transcribe in the command.
+    pub speech_host: Option<Arc<dyn transcript::SpeechHost>>,
+    /// [`transcript::SpeechHost`] jobs whose transcripts are applied when they finish.
+    pub transcript_jobs: Vec<transcript::PendingTranscript>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
@@ -591,6 +596,8 @@ impl Session {
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            speech_host: None,
+            transcript_jobs: Vec::new(),
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
@@ -681,6 +688,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        transcript::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -1368,6 +1376,8 @@ mod sequence_tools_tests;
 mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod speech_host_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]

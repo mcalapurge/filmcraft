@@ -24,6 +24,12 @@ filmcraft-color = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-format = { workspace = true }
 filmcraft-time = { workspace = true }
+# Whisper runs in the speech worker (`speech-worker.js`) on this same module
+filmcraft-speech = { workspace = true, features = ["whisper"] }
+# candle's random numbers come from the browser (`crypto.getRandomValues`); the matching
+# `getrandom_backend` cfg is set for wasm32 in `.cargo/config.toml`
+getrandom = { version = "0.3", features = ["wasm_js"] }
+sha2 = "0.10"
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 serde_json = { workspace = true }
@@ -49,6 +55,7 @@ web-sys = { version = "0.3", features = [
     "Document",
     "DragEvent",
     "Element",
+    "ErrorEvent",
     "Event",
     "EventTarget",
     "File",
@@ -72,10 +79,15 @@ web-sys = { version = "0.3", features = [
     "OffscreenCanvas",
     "OffscreenCanvasRenderingContext2d",
     "Performance",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
     "Response",
     "StorageManager",
     "Url",
     "UrlSearchParams",
     "Window",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
     "WritableStream",
 ] }
