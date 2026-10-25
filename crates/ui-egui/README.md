@@ -129,6 +129,7 @@ The target swatch or eyedropper can replace a band's target hue. Reset restores 
 five defaults; double-clicking a slider restores its default value. The section switch bypasses
 all six bands. Neutral pixels remain unchanged. Overlapping bands add adjustments computed
 from the same source hue. HDR uses the existing grading signal and highlight normalization.
+Active adjustments use the GPU compute effect path when available (Metal on Apple silicon), with the CPU renderer retained as fallback.
 
 Settings are standard Lumetri parameters (`selective_on`, `selective_<band>_color`,
 `selective_<band>_hue`, `_sat`, `_luma`, `_range`), saved with the project, undoable and
@@ -140,6 +141,27 @@ is used. The adjustment is our own algorithm, with no claim of matching Apple Ph
 
 `lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
 keyframes in a single undo step. Unknown or missing band names return an error.
+
+
+## Lumetri GPU rendering
+
+Basic/creative corrections, vignette, RGB and hue curves, colour wheels, procedural looks,
+imported 1D/shaper/3D LUTs, HSL Secondary (including median denoise, mask blur and mask views),
+Selective Colour, sharpening and PQ/HLG grading run in the wgpu compute stage. Tables retain
+CPU interpolation; no baked colour cube approximates the grade. Full-frame adjustment layers
+at normal opacity/blend and default Motion use canvas compute passes. HDR display conversion
+runs after compositing and before captions. Working-output exports skip display conversion.
+
+Masked effects, adjustment layers with masks/custom Motion/opacity/blend, unsupported effects
+elsewhere in a chain and complex transitions still use the existing CPU fallback. Log source
+conversion can remain on the CPU while Lumetri itself runs on the GPU. Tables are limited to
+32 MiB and median windows to radius 8 (normal playback uses radius 1–3); unsupported resource
+sizes fall back. Metal tests compare SDR/PQ/HLG, alpha, LUT interpolation, HSL refinement and
+canvas output with the independent CPU renderer.
+
+The timeline uses GPU cost estimates only when its actual compositor has an available effect
+stage and software rendering is off. Those estimates are not measured frame-rate guarantees;
+preview hashes and rendered-preview coverage do not depend on the hardware path.
 
 ## Font fallbacks
 

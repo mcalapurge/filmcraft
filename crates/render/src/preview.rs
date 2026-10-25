@@ -33,6 +33,9 @@
 //!   CPU: 12 ms plus the CPU path of both layers;
 //! * **adjustment layers**: whole-frame CPU render (10 ms) plus their effects.
 //!
+//! With `video_segments_with_gpu`, eligible effect chains use GPU estimates when the caller
+//! confirms that its compute stage is available; software mode retains the CPU costs.
+//!
 //! A segment is **red** when the estimate exceeds [`REALTIME_BUDGET`] × the frame duration,
 //! **yellow** when it plays in real time but is not "native", and has **no bar** when it is a single
 //! clip with no standard effects, untouched Motion/Opacity, normal speed, and a source whose frame
@@ -130,6 +133,12 @@ fn layers_at<'a>(seq: &'a Sequence, t: Tick) -> Vec<Layer<'a>> {
 
 /// Compute the render-bar segments of sequence `seq_id`.
 pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
+    video_segments_with_gpu(project, seq_id, false)
+}
+
+/// Render-bar estimate for a caller that knows whether the GPU effect stage is available.
+/// This remains a cost estimate, not a promise of a measured playback frame rate.
+pub fn video_segments_with_gpu(project: &Project, seq_id: ItemId, gpu: bool) -> Vec<Segment> {
     let Some(seq) = project.sequence(seq_id) else { return Vec::new() };
     let rate = seq.settings.frame_rate;
     let mut cuts: Vec<i64> = Vec::new();
@@ -193,7 +202,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
         if absolute {
             h.json(&("absolute", fa));
         }
-        let cost_ms = estimate_cost(project, seq, &layers);
+        let cost_ms = estimate_cost(project, seq, &layers, t, gpu);
         let budget = rate.frame_duration().seconds() * 1000.0 * REALTIME_BUDGET;
         let need = if cost_ms > budget {
             Need::Render
@@ -489,7 +498,42 @@ fn cpu_layer(project: &Project, it: &TrackItem) -> bool {
     fx || blend || nested
 }
 
-fn layer_cost(project: &Project, it: &TrackItem, px: f64, force_cpu: bool) -> f64 {
+fn layer_cost(project: &Project, seq: &Sequence, it: &TrackItem, px: f64, force_cpu: bool, t: Tick, gpu: bool) -> f64 {
+    if gpu && !force_cpu && !it.has_opacity_masks() && crate::plan::layered_at(project, seq, t) {
+        let cx = crate::effects::FxCtx {
+            t: it.source_time_at(t),
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: &it.name,
+            project: Some(project),
+            env: None,
+            frame_rate: seq.settings.frame_rate.as_f64(),
+            working: seq.settings.color.working,
+        };
+        let effects: Option<Vec<_>> = it
+            .effects
+            .iter()
+            .filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic))
+            .map(|e| {
+                if e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) {
+                    return None;
+                }
+                crate::gpufx::FxOp::eval(e, &cx, seq.settings.width as usize, seq.settings.height as usize).filter(crate::gpufx::FxOp::gpu_ok)
+            })
+            .collect();
+        let media = project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::AdjustmentLayer { .. }));
+        if media && let Some(effects) = effects {
+            let cost: f64 = effects
+                .iter()
+                .map(|op| match op {
+                    crate::gpufx::FxOp::LumetriFull(full) if full.hsl && (full.median_radius > 0 || !full.mask_blur.0.is_empty()) => 12.0,
+                    _ => 3.0,
+                })
+                .sum();
+            return decode_cost_ms(project, it.item, 0) + 0.5 + cost * px;
+        }
+    }
     if project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. })) {
         return 10.0 * px + item_fx_cost(it, px);
     }
@@ -498,15 +542,15 @@ fn layer_cost(project: &Project, it: &TrackItem, px: f64, force_cpu: bool) -> f6
     decode + path + item_fx_cost(it, px)
 }
 
-fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
+fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer], t: Tick, gpu: bool) -> f64 {
     let px = (seq.settings.width as f64 * seq.settings.height as f64) / HD_PIXELS;
     let mut total = 0.0;
     for l in layers {
         total += match l {
-            Layer::Item(_, it) => layer_cost(project, it, px, false),
+            Layer::Item(_, it) => layer_cost(project, seq, it, px, false, t, gpu),
             Layer::Transition(_, x, a, b) => {
                 let simple = matches!(x.effect.effect.as_str(), "cross_dissolve" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve");
-                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, it, px, !simple))).sum();
+                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, seq, it, px, !simple, t, gpu))).sum();
                 sides + if simple { 1.0 } else { 12.0 * px }
             }
         };

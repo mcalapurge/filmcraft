@@ -309,6 +309,8 @@ fn limit_video(v: vec3<f32>, max_val: f32, comp: f32, axis: u32) -> vec3<f32> {
 
 fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     switch op {
+        case 38u: { return output_linear(c); }
+
         case OP_BRIGHTNESS_CONTRAST: {
             let br = u.p0.x; let co = u.p0.y;
             return dec((enc(c) - 0.5) * co + 0.5 + br);
@@ -535,6 +537,7 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
     switch op {
+        case 32u, 33u, 34u, 36u, 37u: { return lumetri_full(op, p); }
         case OP_INVERT_ALPHA: {
             let o = ld(p);
             let a = o.a;

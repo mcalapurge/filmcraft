@@ -32,6 +32,8 @@ pub struct Resample {
 /// One evaluated effect.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FxOp {
+    OutputColor(filmcraft_color::GpuInputParams),
+    LumetriFull(std::sync::Arc<crate::lumetri_gpu::LumetriGpu>),
     BrightnessContrast {
         br: f32,
         co: f32,
@@ -539,6 +541,9 @@ impl FxOp {
                     && !hsl_on
                     && !crate::effects::selective_active(e, cx);
 
+                if !gpu_capable && let Some(full) = crate::lumetri_gpu::LumetriGpu::eval(e, cx, w, h) {
+                    return Some(FxOp::LumetriFull(std::sync::Arc::new(full)));
+                }
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
                 let tint = bf("tint") / 100.0;
@@ -598,6 +603,12 @@ impl FxOp {
     pub fn gpu_ok(&self) -> bool {
         let fin = |v: &[f32]| v.iter().all(|x| x.is_finite());
         match self {
+            FxOp::OutputColor(p) => {
+                p.matrix.iter().flatten().flatten().all(|v| v.is_finite())
+                    && p.desaturate.iter().flatten().all(|v| v.is_finite())
+                    && p.tone.is_none_or(|(s, d)| s.is_finite() && d.is_finite() && s > 0.0 && d > 0.0)
+            }
+            FxOp::LumetriFull(_) => true,
             FxOp::BrightnessContrast { br, co } => fin(&[*br, *co]),
             FxOp::ProcAmp { br, co, hue, sat } => fin(&[*br, *co, *hue, *sat]),
             FxOp::Tint { black, white, amount } => fin(black) && fin(white) && amount.is_finite(),
@@ -645,6 +656,22 @@ impl FxOp {
             return;
         }
         match self {
+            FxOp::OutputColor(p) => {
+                let tone = p.tone.map(|(s, d)| filmcraft_color::ToneMap::new(s as f64, d as f64));
+                img.map_rgb(|mut c, _, _| {
+                    if let Some(t) = &tone {
+                        c = t.apply(c);
+                    }
+                    if let Some(m) = p.matrix {
+                        c = filmcraft_color::spaces::apply3(&m, c);
+                    }
+                    if let Some(l) = p.desaturate {
+                        c = filmcraft_color::transform::desaturate_into_gamut(c, l);
+                    }
+                    c
+                });
+            }
+            FxOp::LumetriFull(full) => full.apply(img),
             FxOp::BrightnessContrast { br, co } => {
                 let (br, co) = (*br, *co);
                 img.map_rgb(|c, _, _| {

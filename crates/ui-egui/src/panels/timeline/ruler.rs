@@ -159,7 +159,8 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
     // Per segment (engine `previews`): green = rendered preview, yellow = should play in real time,
     // red = needs rendering, nothing = plays natively.
     let rb = Rect::from_min_max(pos2(ruler.min.x, ruler.max.y - 2.0), ruler.max);
-    let bar = app.session.previews.bar(&app.session.project, seq_id);
+    let gpu = app.gpu.as_ref().is_some_and(|g| g.compositor.gpu_effects_available()) && !crate::panels::menu_dialogs::software_renderer(app);
+    let bar = app.session.previews.bar_with_gpu(&app.session.project, seq_id, gpu);
     for (i, span) in bar.iter().enumerate() {
         use filmcraft_engine::previews::BarState;
         let (c, what) = match span.state {

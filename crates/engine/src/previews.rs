@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{FrameRequest, SharedSource};
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::preview::{AudioSegment, Need, Segment, segment_at, video_segments};
+use filmcraft_render::preview::{AudioSegment, Need, Segment, segment_at};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -70,7 +70,7 @@ pub enum RenderMode {
     Selection,
 }
 
-type Memo = (Arc<Project>, ItemId, Arc<Vec<Segment>>);
+type Memo = (Arc<Project>, ItemId, bool, Arc<Vec<Segment>>);
 type AudioMemo = (Arc<Project>, ItemId, Arc<Vec<AudioSegment>>);
 
 /// Preview files of one project, plus memoized segments for the latest project snapshots.
@@ -456,12 +456,16 @@ impl PreviewStore {
 
     /// Segments of `seq` in this project snapshot (memoized per snapshot).
     pub fn segments(&self, project: &Arc<Project>, seq: ItemId) -> Arc<Vec<Segment>> {
+        self.segments_with_gpu(project, seq, false)
+    }
+
+    fn segments_with_gpu(&self, project: &Arc<Project>, seq: ItemId, gpu: bool) -> Arc<Vec<Segment>> {
         let mut memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, _, s)) = memo.iter().find(|(p, q, _)| Arc::ptr_eq(p, project) && *q == seq) {
+        if let Some((_, _, _, s)) = memo.iter().find(|(p, q, g, _)| Arc::ptr_eq(p, project) && *q == seq && *g == gpu) {
             return s.clone();
         }
-        let segs = Arc::new(video_segments(project, seq));
-        memo.push((project.clone(), seq, segs.clone()));
+        let segs = Arc::new(filmcraft_render::preview::video_segments_with_gpu(project, seq, gpu));
+        memo.push((project.clone(), seq, gpu, segs.clone()));
         if memo.len() > 4 {
             memo.remove(0);
         }
@@ -476,9 +480,14 @@ impl PreviewStore {
     /// The render bar: per segment, green over its rendered frames and its own colour elsewhere;
     /// adjacent spans of the same colour merged.
     pub fn bar(&self, project: &Arc<Project>, seq: ItemId) -> Vec<BarSpan> {
+        self.bar_with_gpu(project, seq, false)
+    }
+
+    /// Hardware-aware render bar; preview coverage and hashes are unchanged.
+    pub fn bar_with_gpu(&self, project: &Arc<Project>, seq: ItemId, gpu: bool) -> Vec<BarSpan> {
         let Some(rate) = project.sequence(seq).map(|q| q.settings.frame_rate) else { return Vec::new() };
         let mut out: Vec<BarSpan> = Vec::new();
-        for s in self.segments(project, seq).iter() {
+        for s in self.segments_with_gpu(project, seq, gpu).iter() {
             let need = need_state(s);
             let mut spans = Vec::new();
             let mut pos = 0;

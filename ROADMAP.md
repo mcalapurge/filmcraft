@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+- Colour acceleration: all Lumetri control groups now have Metal/WGSL compute paths, including LUTs, HSL refinement, selective colour and HDR. Default adjustment layers and HDR display conversion stay on the GPU; the timeline distinguishes GPU and software cost estimates. CPU fallback remains for unsupported masks, adjustment geometry and resource limits.
+
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 

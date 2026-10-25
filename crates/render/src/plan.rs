@@ -86,6 +86,8 @@ pub enum FramePlan {
 
 #[derive(Clone)]
 pub enum PlanStep {
+    /// Whole-canvas GPU effects (adjustment layers and working-to-display conversion).
+    Effects(Vec<FxOp>),
     Layers(Vec<PlanLayer>),
     /// Inputs are isolated clip canvases; transition result composites Normal over lower tracks.
     Transition {
@@ -168,6 +170,7 @@ impl FramePlan {
             Self::Composite { steps, .. } => steps
                 .iter()
                 .map(|s| match s {
+                    PlanStep::Effects(_) => 0,
                     PlanStep::Layers(ls) => layers(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layers(ls)).sum(),
                 })
@@ -184,6 +187,7 @@ impl FramePlan {
             Self::Composite { width, height, steps } => steps
                 .iter()
                 .map(|s| match s {
+                    PlanStep::Effects(_) => 0,
                     PlanStep::Layers(ls) => layer_side(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layer_side(ls)).max().unwrap_or(0),
                 })
@@ -237,6 +241,9 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     if layers.exhausted {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
+    if opts.depth == 0 && !opts.working_output && !seq.settings.color.is_plain() {
+        layers.steps.push(PlanStep::Effects(vec![FxOp::OutputColor(crate::colorman::display_transform(&seq.settings.color).gpu_params())]));
+    }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
             layers.push(PlanLayer::new(
@@ -260,11 +267,10 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
 }
 
-/// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
-/// on the CPU, and so does a frame with an adjustment layer or a complex transition anywhere at
-/// `t` (whole-frame fallback).
+/// Frames with unsupported adjustment geometry/masks or complex transitions retain the
+/// whole-frame CPU fallback. HDR/wide-gamut output is a planned canvas colour transform.
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
-    !seq.settings.color.is_plain() || !layered_at(project, seq, t)
+    !layered_at(project, seq, t)
 }
 
 /// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer and no
@@ -286,11 +292,46 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
         }
         if let Some(it) = tr.item_at(t)
             && adjustment(it)
+            && adjustment_ops(project, seq, it, t, 1.0).is_none()
         {
             return false;
         }
     }
     true
+}
+
+fn adjustment_ops(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, scale: f32) -> Option<Vec<FxOp>> {
+    let mt = item.source_time_at(t);
+    let (opacity, blend) = crate::opacity_blend(item, mt);
+    if item.has_opacity_masks()
+        || (opacity - 1.0).abs() > 1e-6
+        || blend != Blend::Normal
+        || !near_identity(&motion_matrix(seq, item, (seq.settings.width, seq.settings.height), None, mt))
+    {
+        return None;
+    }
+    let (w, h) = output_size(seq, scale);
+    let cx = crate::effects::FxCtx {
+        t: mt,
+        px_scale: scale,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: &item.name,
+        project: Some(project),
+        env: None,
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        working: seq.settings.color.working,
+    };
+    item.effects
+        .iter()
+        .filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic))
+        .map(|e| {
+            if e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) {
+                return None;
+            }
+            FxOp::eval(e, &cx, w, h).filter(FxOp::gpu_ok)
+        })
+        .collect()
 }
 
 /// Push the layers of every video track of `seq` at `t`, bottom track first (`seq` must be
@@ -353,6 +394,14 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
         }
         let Some(item) = tr.item_at(t) else { continue };
         if !item.enabled {
+            continue;
+        }
+        if project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. })) {
+            if opts.effects
+                && let Some(ops) = adjustment_ops(project, seq, item, t, opts.scale)
+            {
+                layers.steps.push(PlanStep::Effects(ops));
+            }
             continue;
         }
         push_item(project, seq, item, t, opts, sources, 1.0, None, nest, layers);
@@ -476,6 +525,38 @@ fn push_item(
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain =
             (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        if !plain && !chain.is_empty() && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none() {
+            let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
+            let image = crate::colorman::decode(project, item.item, &frame, n, pipe);
+            let (lw, lh) = (image.w, image.h);
+            let px_scale = lw as f32 / size.0.max(1) as f32;
+            let cx = crate::effects::FxCtx {
+                t: mt,
+                px_scale,
+                seconds: 0.0,
+                timecode: "",
+                clip_name: &item.name,
+                project: Some(project),
+                env: None,
+                frame_rate: seq.settings.frame_rate.as_f64(),
+                working: seq.settings.color.working,
+            };
+            let ops: Option<Vec<_>> = chain.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
+            if let Some(ops) = ops {
+                let matrix = Affine::scale(opts.scale as f64, opts.scale as f64)
+                    .then_apply(&motion)
+                    .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+                out.push(PlanLayer {
+                    frame: cpu_frame(image),
+                    matrix,
+                    opacity: op * extra_opacity,
+                    blend: bl,
+                    fx: Some(Arc::new(LayerFx { size: (lw as u32, lh as u32), decimation: 1, ops })),
+                    input: None,
+                });
+                return;
+            }
+        }
         if plain && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
@@ -553,6 +634,11 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
             let mut canvas = crate::Image::new(*width, *height);
             for step in steps {
                 match step {
+                    PlanStep::Effects(ops) => {
+                        for op in ops {
+                            op.apply(&mut canvas);
+                        }
+                    }
                     PlanStep::Layers(layers) => execute_layers(&mut canvas, layers),
                     PlanStep::Transition { inputs, effect, progress, scale } => {
                         let [a, b] = inputs.each_ref().map(|layers| {

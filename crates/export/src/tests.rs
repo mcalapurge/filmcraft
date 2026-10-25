@@ -454,35 +454,48 @@ fn gpu_hook_scenarios() {
     // at most one panic per pooled renderer (4): none is used again after it panicked
     assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
 
-    // 5. A frame the planner hands back as one CPU image (an adjustment layer over the clip from
-    //    frame 12) is rendered by the CPU without taking a pooled renderer: it counts as a
+    // 5. An adjustment layer over the clip from frame 12. At full opacity it is a canvas pass the
+    //    renderer takes, so every frame is the renderer's. At 50 % the planner hands the frame
+    //    back as one CPU image, rendered without taking a pooled renderer: it counts as a
     //    fallback, and the renderer's picture reaches only the frames before it.
-    crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
-    let (p, seq, m) = project();
-    let mut p = Arc::unwrap_or_clone(p);
     let r = FrameRate::FPS_24;
-    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
-    let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
-    q.video_tracks[1].items.push(over);
-    let p = Arc::new(p);
-    let mk24 = |path: &String, gpu: crate::GpuRendering| {
-        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
-        s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
-        s.gpu_rendering = gpu;
-        export(&p, seq, &s, &m, &Progress::default()).unwrap()
-    };
-    mk24(&tmp("adj-off.png"), crate::GpuRendering::Off);
-    mk24(&tmp("adj-auto.png"), crate::GpuRendering::Auto);
     let frame = |name: &str, f: &str| std::fs::read(tmp(&format!("{name}{f}.png"))).unwrap();
-    assert_ne!(frame("adj-off", "011"), frame("adj-auto", "011"), "a layered frame goes to the renderer");
-    for f in ["012", "023"] {
-        assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
+    for (opacity, name) in [(100.0, "adj"), (50.0, "adj-half")] {
+        crate::reset_frame_renderers_for_tests();
+        crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+        let (p, seq, m) = project();
+        let mut p = Arc::unwrap_or_clone(p);
+        let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+        let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+        over.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = filmcraft_project::ParamValue::Float(opacity);
+        let v2 = filmcraft_project::TrackId(p.alloc_id());
+        let q = p.sequence_mut(seq).unwrap();
+        q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+        q.video_tracks[1].items.push(over);
+        let p = Arc::new(p);
+        let mk24 = |path: &String, gpu: crate::GpuRendering| {
+            let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+            s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
+            s.gpu_rendering = gpu;
+            export(&p, seq, &s, &m, &Progress::default()).unwrap()
+        };
+        mk24(&tmp(&format!("{name}-off.png")), crate::GpuRendering::Off);
+        mk24(&tmp(&format!("{name}-auto.png")), crate::GpuRendering::Auto);
+        let (off, auto) = (format!("{name}-off"), format!("{name}-auto"));
+        assert_ne!(frame(&off, "011"), frame(&auto, "011"), "{name}: a layered frame goes to the renderer");
+        let stats = gpu_render_stats();
+        if opacity < 100.0 {
+            for f in ["012", "023"] {
+                assert_eq!(frame(&off, f), frame(&auto, f), "{name} frame {f}: a partly transparent adjustment layer frame is the CPU's");
+            }
+            assert_eq!((stats.frames, stats.fallbacks), (12, 12), "{name}: {stats:?}");
+        } else {
+            for f in ["012", "023"] {
+                assert_ne!(frame(&off, f), frame(&auto, f), "{name} frame {f}: a full-frame adjustment layer goes to the renderer");
+            }
+            assert_eq!((stats.frames, stats.fallbacks), (24, 0), "{name}: {stats:?}");
+        }
     }
-    assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
     crate::reset_frame_renderers_for_tests();
 }
 

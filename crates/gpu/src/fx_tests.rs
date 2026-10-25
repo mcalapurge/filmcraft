@@ -514,64 +514,72 @@ fn hostile_parameters_are_bounded() {
 }
 
 #[test]
-fn lumetri_unsupported_sections_fall_back() {
+fn lumetri_all_sections_are_gpu_capable() {
     let (w, h) = (40usize, 24usize);
     // sharpen > 0 and input LUT (explicitly required by brief)
     let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()), "sharpen > 0 and input_lut must run on the GPU");
 
     // sharpen alone
     let e = effect("lumetri", &[("sharpen", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // input_lut alone
     let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // look_lut
     let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // look > 0
     let e = effect("lumetri", &[("look", ch(1))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // curve_luma modified
     let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // hue_vs_sat non-empty
     let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // wheel offset
     let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // wheel lightness
     let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // HSL secondary on
     let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
+
+    // Selective colour must never be omitted by the basic GPU Lumetri path.
+    let e = effect("lumetri", &[("selective_red_hue", fl(45.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
+    let e = effect("lumetri", &[("selective_red_hue", fl(45.0)), ("selective_on", ParamValue::Bool(false))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
     // HDR working space
     let e = effect("lumetri", &[]);
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
     cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
     let op = FxOp::eval(&e, &cx_hdr, w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
@@ -779,4 +787,187 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
         }
     }
+}
+
+#[test]
+fn lumetri_full_gpu_matches_cpu() {
+    let Some((device, queue)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut compositor = GpuCompositor::new(&device, &queue);
+    assert!(compositor.gpu_effects_available(), "GPU effect shaders must be valid");
+    let (w, h) = (37u32, 23u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let mut cases = vec![
+        vec![("selective_red_hue", fl(55.0)), ("selective_yellow_sat", fl(-75.0)), ("selective_blue_luma", fl(25.0)), ("selective_red_range", fl(2.0))],
+        vec![("wheel_shadows", pt(0.3, -0.4)), ("wheel_midtones", pt(-0.2, 0.3)), ("wheel_highlights_l", fl(-25.0))],
+        vec![
+            ("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [0.4, 0.2], [1.0, 0.95]])),
+            ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [1.0, 0.8]])),
+            ("hue_vs_sat", ParamValue::Curve(vec![[0.1, 0.7], [0.7, 0.3]])),
+            ("hue_vs_hue", ParamValue::Curve(vec![[0.1, 0.6], [0.7, 0.4]])),
+            ("hue_vs_luma", ParamValue::Curve(vec![[0.0, 0.6], [0.5, 0.4]])),
+            ("luma_vs_sat", ParamValue::Curve(vec![[0.2, 0.8]])),
+            ("sat_vs_sat", ParamValue::Curve(vec![[0.6, 0.3]])),
+        ],
+        vec![("sharpen", fl(70.0))],
+    ];
+    for look in 1..=8 {
+        cases.push(vec![("look", ch(look)), ("look_intensity", fl(75.0))]);
+    }
+    for mask in 0..=3 {
+        cases.push(vec![
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", fl(5.0)),
+            ("hsl_hue_range", fl(95.0)),
+            ("hsl_hue_shift", fl(75.0)),
+            ("hsl_sat", fl(130.0)),
+            ("hsl_temp", fl(20.0)),
+            ("hsl_tint", fl(-30.0)),
+            ("hsl_show_mask", ch(mask)),
+            ("hsl_denoise", fl(70.0)),
+            ("hsl_blur", fl(40.0)),
+        ]);
+    }
+    let combined = cases[0].iter().chain(&cases[1]).chain(&cases[2]).chain(&cases[3]).chain(&cases[12]).cloned().collect();
+    cases.push(combined);
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        for params in &cases {
+            let e = effect("lumetri", params);
+            let mut context = cx(Tick::ZERO, 1.0);
+            context.working = working;
+            let op = FxOp::eval(&e, &context, w as usize, h as usize).unwrap();
+            assert!(op.gpu_ok());
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("full GPU effect image");
+            let worst = cpu
+                .px
+                .iter()
+                .zip(&gpu)
+                .map(|(a, b)| {
+                    assert!(b.is_finite());
+                    (a - b).abs() / (1.0 + a.abs())
+                })
+                .fold(0.0f32, f32::max);
+            eprintln!("{working:?} {params:?}: {worst:.3e}");
+            assert!(worst < if working.is_hdr() { 0.003 } else { 0.0002 }, "{working:?} {params:?}: {worst}");
+        }
+    }
+}
+
+#[test]
+fn lumetri_imported_luts_gpu_match_cpu() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut compositor = GpuCompositor::new(&device, &queue);
+    assert!(compositor.gpu_effects_available(), "GPU effect shaders must be valid");
+    let (w, h) = (37u32, 23u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let mut shaper = filmcraft_color::Lut1d::identity(17);
+    for c in &mut shaper.data {
+        *c = [c[0] * c[0], c[1] * 0.8, c[2].sqrt()];
+    }
+    let cube = filmcraft_color::Lut3d::from_fn(5, |v| [v[0] * v[1], v[1] * 0.8 + v[2] * 0.2, v[2] * v[2] + 0.1 * v[0]]);
+    for (shape, cube) in [(Some(shaper.clone()), None), (None, Some(cube.clone())), (Some(shaper), Some(cube))] {
+        let lut = filmcraft_color::Lut { title: "Synthetic parity LUT".into(), shaper: shape, cube };
+        let mut project = filmcraft_project::Project::default();
+        project.luts.push(filmcraft_project::ProjectLut {
+            id: "parity".into(),
+            name: "Synthetic".into(),
+            source_path: None,
+            format: "cube".into(),
+            text: lut.to_cube().into(),
+        });
+        for param in ["input_lut", "look_lut"] {
+            let e = effect("lumetri", &[(param, ParamValue::Text("lib:parity".into())), ("look_intensity", fl(65.0))]);
+            for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+                let mut context = cx(Tick::ZERO, 1.0);
+                context.project = Some(&project);
+                context.working = working;
+                let op = FxOp::eval(&e, &context, w as usize, h as usize).unwrap();
+                assert!(op.gpu_ok());
+                let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                op.apply(&mut cpu);
+                let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+                let worst = cpu.px.iter().zip(gpu).map(|(a, b)| (a - b).abs() / (1.0 + a.abs())).fold(0.0f32, f32::max);
+                assert!(worst < 0.003, "{param} {working:?}: {worst}");
+            }
+        }
+    }
+}
+
+#[test]
+fn lumetri_canvas_adjustment_and_hdr_display_match_cpu() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut compositor = GpuCompositor::new(&device, &queue);
+    assert!(compositor.gpu_effects_available(), "GPU effect shaders must be valid");
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = Arc::new(VideoFrame::rgba_f32(w, h, px));
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        let mut context = cx(Tick::ZERO, 1.0);
+        context.working = working;
+        let e = effect("lumetri", &[("selective_red_hue", fl(50.0)), ("wheel_midtones_l", fl(15.0))]);
+        let op = FxOp::eval(&e, &context, w as usize, h as usize).unwrap();
+        let pipeline = filmcraft_color::ColorPipeline { working, wide_gamut: false, auto_tone_map: true };
+        let plan = FramePlan::Composite {
+            width: w as usize,
+            height: h as usize,
+            steps: vec![
+                filmcraft_render::plan::PlanStep::Layers(vec![PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal)]),
+                filmcraft_render::plan::PlanStep::Effects(vec![op]),
+                filmcraft_render::plan::PlanStep::Effects(vec![FxOp::OutputColor(filmcraft_color::OutputTransform::display(&pipeline).gpu_params())]),
+            ],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        compositor.composite(&plan);
+        let (_, _, gpu) = compositor.read_output().unwrap();
+        let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; (w * h) as usize]);
+        assert!(p99 <= 6 && mean < 1.5, "{working:?}: p99={p99}, mean={mean}, max={max}");
+    }
+}
+
+#[test]
+#[ignore = "manual Metal throughput measurement, includes upload and synchronous readback"]
+fn lumetri_gpu_1080p_throughput() {
+    let (device, queue) = device().unwrap();
+    let mut compositor = GpuCompositor::new(&device, &queue);
+    assert!(compositor.gpu_effects_available(), "GPU effect shaders must be valid");
+    let (w, h) = (1920u32, 1080u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let e = effect("lumetri", &[("selective_red_hue", fl(50.0)), ("wheel_midtones_l", fl(10.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
+    let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op.clone()] };
+    compositor.effect_image(&frame, &fx).unwrap();
+    let now = std::time::Instant::now();
+    for _ in 0..10 {
+        compositor.effect_image(&frame, &fx).unwrap();
+    }
+    let gpu_ms = now.elapsed().as_secs_f64() * 100.0;
+    let plan = FramePlan::Layers {
+        width: w as usize,
+        height: h as usize,
+        layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal) }],
+    };
+    compositor.composite(&plan);
+    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    let now = std::time::Instant::now();
+    for _ in 0..10 {
+        compositor.composite(&plan);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+    let resident_ms = now.elapsed().as_secs_f64() * 100.0;
+    eprintln!("GPU resident playback path (no readback): {resident_ms:.2} ms/frame");
+    let mut image = filmcraft_render::Image { w: w as usize, h: h as usize, px };
+    let now = std::time::Instant::now();
+    op.apply(&mut image);
+    eprintln!("Lumetri 1080p GPU including readback {gpu_ms:.2} ms/frame; CPU {:.2} ms/frame", now.elapsed().as_secs_f64() * 1000.0);
 }

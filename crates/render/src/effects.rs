@@ -621,7 +621,7 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
-fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub(crate) fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
     let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
@@ -1055,7 +1055,7 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+pub(crate) fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }

@@ -25,13 +25,21 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
+        let mut app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |_cc| app);
+        let harness = b.build_eframe(move |cc| {
+            if std::env::var_os("FILMCRAFT_UI_TEST_GPU").is_some()
+                && let Some(rs) = &cc.wgpu_render_state
+            {
+                app.set_wgpu(rs.clone());
+                assert!(app.gpu.as_ref().is_some_and(|g| g.compositor.gpu_effects_available()));
+            }
+            app
+        });
         let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d
