@@ -1817,6 +1817,20 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// Background work that must go on while the window is hidden, minimized or behind other
+    /// windows, where eframe runs [`eframe::App::logic`] but not `ui`: the export queue starts its
+    /// next item, and finished jobs (proxies, masks, scene detection, auto-save) are applied. A
+    /// running job keeps the app waking up, since nothing is drawn to ask for the next call.
+    pub fn tick_background(&mut self, ctx: &egui::Context) {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.session.poll_persistence())).is_err() {
+            self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
+        }
+        let running = self.session.jobs.iter().any(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+        if running || self.session.export_queue.is_active() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
@@ -1826,7 +1840,6 @@ impl FilmcraftApp {
         self.auto.begin_frame();
         panels::metadata::follow_selection(self);
         self.frames.set_context(&ctx);
-        self.session.poll_persistence();
         panels::trim_monitor::advance(self, &ctx);
         if self.session.persistence.is_some() && self.session.is_dirty() {
             // Keep polling the auto-save worker (status, "also save the project" results).
@@ -2178,6 +2191,7 @@ impl eframe::App for FilmcraftApp {
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
+        self.tick_background(ctx);
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {
