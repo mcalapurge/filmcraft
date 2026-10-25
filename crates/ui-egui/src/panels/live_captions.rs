@@ -58,7 +58,7 @@ const TRACK_KEY: &str = "live-cap-track";
 /// project change (every edit makes a new project) rather than every frame.
 fn overflowing(ui: &egui::Ui, project: &std::sync::Arc<filmcraft_project::Project>, tr: &CaptionTrack, w: u32, h: u32) -> std::sync::Arc<Vec<u64>> {
     type Cached = (usize, u64, std::sync::Arc<Vec<u64>>);
-    let key = egui::Id::new("live-cap-overflow");
+    let key = egui::Id::unique("live-cap-overflow");
     let at = std::sync::Arc::as_ptr(project) as usize;
     if let Some((p, t, ids)) = ui.data(|d| d.get_temp::<Cached>(key))
         && p == at
@@ -97,7 +97,7 @@ fn on(bg: Color32) -> Color32 {
 
 /// The track the panel edits: the one picked, else the first with word-timed captions, else C1.
 fn current_track(ui: &egui::Ui, tracks: &[CaptionTrack]) -> Option<usize> {
-    let picked = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new(TRACK_KEY)));
+    let picked = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::unique(TRACK_KEY)));
     picked
         .and_then(|id| tracks.iter().position(|t| t.id.0 == id))
         .or_else(|| tracks.iter().position(|t| t.captions.iter().any(|c| !c.words.is_empty())))
@@ -106,7 +106,7 @@ fn current_track(ui: &egui::Ui, tracks: &[CaptionTrack]) -> Option<usize> {
 
 /// A tab label with the accent underline when active (Essential Graphics' tabs).
 fn tab_button(ui: &mut egui::Ui, r: Rect, label: &str, active: bool, t: &Tokens) -> egui::Response {
-    let resp = ui.interact(r, egui::Id::new(("live-cap-tab", label)), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(("live-cap-tab", label)), Sense::click());
     if active {
         ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 1.5), pos2(r.max.x - 6.0, r.max.y - 1.5)], Stroke::new(2.0, t.accent));
     }
@@ -118,7 +118,7 @@ fn tab_button(ui: &mut egui::Ui, r: Rect, label: &str, active: bool, t: &Tokens)
 /// A toolbar icon button (the Text panel's).
 fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, id: &str, label: &str) -> bool {
     let t = app.tokens;
-    let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r, t.radius_sm, t.hover);
     }
@@ -161,12 +161,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- toolbar: track, words per caption, Generate, Re-cut
     let bar = Rect::from_min_size(rect.min + vec2(10.0, 4.0), vec2((rect.width() - 20.0).max(0.0), 26.0));
     let picker = Rect::from_min_size(pos2(bar.min.x, bar.min.y + 2.0), vec2(150.0f32.min(bar.width() * 0.35), 22.0));
-    let presp = crate::widgets::dropdown_text(ui, picker, &format!("C{} · {}", ti + 1, tr.name), &t, egui::Id::new("live-cap-track-picker"));
+    let presp = crate::widgets::dropdown_text(ui, picker, &format!("C{} · {}", ti + 1, tr.name), &t, egui::Id::unique("live-cap-track-picker"));
     app.auto.add("liveCaptions.track", picker, "Caption track");
     egui::Popup::menu(&presp).show(|ui| {
         for (i, other) in seq.caption_tracks.iter().enumerate() {
             if ui.selectable_label(i == ti, format!("C{} · {}", i + 1, other.name)).clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(TRACK_KEY), other.id.0));
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(TRACK_KEY), other.id.0));
             }
         }
     });
@@ -265,7 +265,7 @@ fn empty_state(
     ui.painter().text(c + vec2(0.0, 10.0), Align2::CENTER_CENTER, note, Tokens::ui(11.5), t.text_faint);
     let r = Rect::from_center_size(c + vec2(0.0, 42.0), vec2(200.0, 26.0));
     let id = "liveCaptions.generate";
-    let resp = ui.interact(r, egui::Id::new(id), if enabled { Sense::click() } else { Sense::hover() });
+    let resp = ui.interact(r, egui::Id::unique(id), if enabled { Sense::click() } else { Sense::hover() });
     let fill = match (enabled, resp.hovered()) {
         (false, _) => t.field_bg,
         (true, true) => t.accent_hover,
@@ -297,11 +297,11 @@ fn caption_list(
     let ph = app.session.playhead();
     let current = tr.caption_at(ph).map(|c| c.id);
     if current.is_none() {
-        ui.data_mut(|d| d.remove::<u64>(egui::Id::new("live-caption-follow")));
+        ui.data_mut(|d| d.remove::<u64>(egui::Id::unique("live-caption-follow")));
     }
     let sel = app.session.state.caption_selection.clone();
     let hi = c32(tr.style.highlight_color);
-    let editing_key = egui::Id::new("live-cap-editing");
+    let editing_key = egui::Id::unique("live-cap-editing");
     let editing: Option<(u64, Option<usize>)> = ui.ctx().data(|d| d.get_temp(editing_key));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(4.0)).id_salt("live-caption-list"));
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("live-caption-scroll").show(&mut child, |ui| {
@@ -362,7 +362,7 @@ fn caption_list(
                 ui.painter().rect_stroke(row, 3.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
                 // the list follows the playhead: each caption it reaches is brought to the middle
                 // once, but never while a field is being edited
-                let follow = egui::Id::new("live-caption-follow");
+                let follow = egui::Id::unique("live-caption-follow");
                 if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && ui.memory(|m| m.focused().is_none()) {
                     ui.scroll_to_rect(row, Some(egui::Align::Center));
                     ui.data_mut(|d| d.insert_temp(follow, c.id.0));
@@ -391,7 +391,7 @@ fn caption_words(
 ) {
     let t = app.tokens;
     if editing == Some((c.id.0, None)) {
-        let key = egui::Id::new(("live-cap-text", c.id.0));
+        let key = egui::Id::unique(("live-cap-text", c.id.0));
         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
         let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(key.with("te")).desired_width(ui.available_width()).font(Tokens::ui(12.5)));
         app.auto.add(&format!("liveCaptions.{}.text", c.id.0), resp.rect, "Caption text");
@@ -420,7 +420,7 @@ fn caption_words(
         for (i, w) in c.words.iter().enumerate() {
             let auto_id = format!("liveCaptions.{}.word.{i}", c.id.0);
             if editing == Some((c.id.0, Some(i))) {
-                let key = egui::Id::new(("live-cap-word", c.id.0, i));
+                let key = egui::Id::unique(("live-cap-word", c.id.0, i));
                 let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| w.text.clone());
                 let width = (buf.chars().count() as f32 * 8.0 + 20.0).clamp(36.0, 200.0);
                 let resp = ui.add(egui::TextEdit::singleline(&mut buf).id(key.with("te")).desired_width(width).font(Tokens::ui(12.5)));
@@ -598,7 +598,7 @@ fn templates_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, _
         let Ok(style) = filmcraft_engine::live_captions::preset_style(&app.session, name, "captions.setStyle") else { continue };
         let r = Rect::from_min_size(area.min + vec2((i % cols) as f32 * (cw + gap), (i / cols) as f32 * (card.y + gap)), card);
         let id = format!("liveCaptions.preset.{name}");
-        let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(&id), Sense::click());
         let selected = tr.style == style;
         let fill = if selected {
             t.row_selected
@@ -634,7 +634,7 @@ fn section(app: &mut FilmcraftApp, ui: &mut egui::Ui, title: &str, add: impl FnO
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
     let open = !app.ui.live_captions.collapsed.iter().any(|s| s == title);
-    let (resp, now) = crate::widgets::section_header(ui, egui::Id::new(("live-cap-section", title)), crate::i18n::t(title), open, &t, true);
+    let (resp, now) = crate::widgets::section_header(ui, egui::Id::unique(("live-cap-section", title)), crate::i18n::t(title), open, &t, true);
     app.auto.add(&format!("liveCaptions.section.{title}"), resp.rect, title);
     if now != open {
         if now {
@@ -677,10 +677,10 @@ fn hot(
     suffix: &str,
 ) -> Option<f64> {
     let t = app.tokens;
-    let key = egui::Id::new(("live-cap-hot", id));
+    let key = egui::Id::unique(("live-cap-hot", id));
     let draft = key.with("draft");
     let shown = ui.data(|d| d.get_temp::<f64>(draft)).unwrap_or(value);
-    let (resp, nv) = crate::widgets::hot_number(ui, key, shown, speed, range, decimals, suffix, &t);
+    let (resp, nv) = crate::widgets::hot_number(ui, label, key, shown, crate::widgets::HotNumberOptions::new(speed, range, decimals, suffix, &t));
     app.auto.add(id, resp.rect, label);
     if resp.dragged() {
         if let Some(v) = nv {
@@ -829,7 +829,7 @@ fn highlight_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, a
         for (i, h) in WordHighlight::ALL.into_iter().enumerate() {
             let r = Rect::from_min_size(area.min + vec2(20.0 + i as f32 * (w + gap), 0.0), vec2(w, 54.0));
             let id = format!("liveCaptions.highlight.{}", h.label().to_lowercase());
-            let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
+            let resp = ui.interact(r, egui::Id::unique(&id), Sense::click());
             let active = st.highlight == h;
             let fill = if active {
                 t.row_selected
