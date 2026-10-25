@@ -180,7 +180,8 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels", "Vertical"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -316,6 +317,20 @@ pub fn workspace(name: &str) -> DockNode {
     use SplitSize::*;
     let bottom_editing = || hsplit(FixedA(64.0), tabs(&[Tools], 0), hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0)));
     match name {
+        // Portrait preview uses the full height; the timeline stays under the editing panels.
+        "Vertical" => hsplit(
+            Ratio(0.74),
+            vsplit(
+                Ratio(0.60),
+                hsplit(
+                    Ratio(0.48),
+                    tabs(&[Project, MediaBrowser, Effects, Libraries, Source], 0),
+                    tabs(&[Properties, EffectControls, LiveCaptions, Text, EssentialGraphics, LumetriColor, EssentialSound], 0),
+                ),
+                bottom_editing(),
+            ),
+            tabs(&[Program], 0),
+        ),
         "Assembly" => vsplit(
             Ratio(0.52),
             hsplit(
