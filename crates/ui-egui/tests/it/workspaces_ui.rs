@@ -172,6 +172,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Effects",
             "Learning",
             "Review",
+            "Vertical",
             "Reset to Saved Layout",
             "Save Changes to this Workspace",
             "Save as New Workspace…",
@@ -277,4 +278,36 @@ fn save_rename_and_delete_through_the_dialogs() {
     d.click("workspaces.edit.close");
     assert!(d.app().ui.workspace_dialog.is_none(), "Close closes the dialog");
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn vertical_workspace_keeps_portrait_preview_beside_the_timeline() {
+    let data = data_dir("vertical");
+    let mut d = Driver::launch(&data);
+    d.app().session.execute("sequence.settings", json!({"width": 1080, "height": 1920})).unwrap();
+    d.menu("window.workspace.vertical", json!({}));
+    assert_eq!(d.workspace(), "Vertical");
+    for panel in [PanelKind::Project, PanelKind::Properties, PanelKind::Timeline, PanelKind::Program, PanelKind::LiveCaptions] {
+        assert!(d.shows(panel));
+    }
+    assert!(d.workspaces_menu().iter().any(|(name, checked)| name == "Vertical" && *checked));
+    let layout = d.app().ui.dock.clone();
+    let Some(craft_ui::docking::Node::Split { axis: craft_ui::layout::SplitAxis::Horizontal, first, second, .. }) = &layout.root else {
+        panic!("preview must be beside the editing area")
+    };
+    let first = craft_ui::docking::Layout { root: Some((**first).clone()), ..Default::default() };
+    let second = craft_ui::docking::Layout { root: Some((**second).clone()), ..Default::default() };
+    assert_eq!(second.panel_state(&PanelKind::Program), craft_ui::docking::PanelState::Front);
+    assert!(!first.contains(&PanelKind::Program));
+    assert!(first.contains(&PanelKind::Timeline));
+    d.snapshot("vertical");
+    d.menu("window.workspace.saveChanges", json!({}));
+    d.menu("window.workspace.editing", json!({}));
+    d.menu("window.workspace.vertical", json!({}));
+    assert_eq!(d.app().ui.dock, layout);
+    drop(d);
+    let mut reopened = Driver::launch(&data);
+    assert_eq!(reopened.workspace(), "Vertical");
+    assert_eq!(reopened.app().ui.dock, layout);
+    std::fs::remove_dir_all(data).unwrap();
 }
