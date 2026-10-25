@@ -520,3 +520,30 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// With the window hidden, minimized or behind other windows eframe runs `logic` but no `ui` pass:
+/// the queue must still start its next item then (it waited at 0 % until the app was shown again),
+/// and keep asking to be called while it runs.
+#[test]
+fn the_queue_goes_on_while_the_window_is_hidden() {
+    let mut d = Driver::new("hidden");
+    let (a, b) = (d.path("h1.wav"), d.path("h2.wav"));
+    let item = |path: &str| json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": path, "range": "custom", "startSeconds": 0.0, "endSeconds": 0.25});
+    d.app().session.execute("export.queue.add", item(&a)).unwrap();
+    d.app().session.execute("export.queue.add", item(&b)).unwrap();
+    d.app().session.execute("export.queue.start", json!({})).unwrap();
+    // only the background tick from here on: no frames, and nothing that reads the queue
+    let ctx = d.harness.ctx.clone();
+    let t0 = std::time::Instant::now();
+    while d.app().session.export_queue.is_active() {
+        assert!(t0.elapsed().as_secs() < 300, "the queue stopped while the window was hidden");
+        d.app().tick_background(&ctx);
+        if d.app().session.export_queue.is_active() {
+            assert!(ctx.has_requested_repaint(), "a running queue must keep the app waking up");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    use filmcraft_engine::export_tools::QueueStatus;
+    assert!(d.app().session.export_queue.items.iter().all(|i| i.status == QueueStatus::Done));
+    assert!(Path::new(&a).exists() && Path::new(&b).exists());
+}

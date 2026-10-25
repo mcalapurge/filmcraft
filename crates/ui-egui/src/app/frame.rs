@@ -37,6 +37,20 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// Background work that must go on while the window is hidden, minimized or behind other
+    /// windows, where eframe runs [`eframe::App::logic`] but not `ui`: the export queue starts its
+    /// next item, and finished jobs (proxies, masks, scene detection, auto-save) are applied. A
+    /// running job keeps the app waking up, since nothing is drawn to ask for the next call.
+    pub fn tick_background(&mut self, ctx: &egui::Context) {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.session.poll_persistence())).is_err() {
+            self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
+        }
+        let running = self.session.jobs.iter().any(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+        if running || self.session.export_queue.is_active() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
     /// Top-level UI pass: set the language, honor the injected panic test hook, lay out header, body and status bar, and dispatch the active mode.
     pub(super) fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
