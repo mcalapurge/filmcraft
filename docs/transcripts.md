@@ -80,6 +80,14 @@ prints SKIPPED. Measured on 2026-10-01: `whisper-tiny`, English, 12.2 % WER over
 the local speech samples (LibriSpeech read speech and dialogue clips) (about 9.5 minutes for the run in a release build on an
 Apple-silicon laptop CPU).
 
+Samples with a `<name>.words` file (`start end word` per line, seconds) also check word timing:
+words must not start late on average (≤ +0.1 s) and their ends must be within 0.25 s on average.
+On macOS, `python3 crates/speech/tools/say_fixtures.py target/fixtures/speech/say` makes such
+samples by synthesising each word separately and joining them with known pauses (clean and with
+noise). Measured on 2026-10-25 with `whisper-base` over 100 words: mean start error −0.33 s,
+end error 0.17 s on average (word starts absorb part of the pause before them; the energy trim
+removes silence but not a pause the boundary has already crossed).
+
 ## Limits
 
 - Transcription runs synchronously inside the command (no background job or progress bar yet).
