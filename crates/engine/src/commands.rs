@@ -2278,8 +2278,18 @@ fn build() -> Vec<CommandSpec> {
                     return Err(bad(CMD, format!("drop-frame timecode needs a 29.97, 59.94 or 119.88 fps timebase, not {rate}")));
                 }
                 let scale_motion = bool_p(p, "scaleMotion").unwrap_or(false);
+                // a new timebase conforms the edits to it; the media extents come from the
+                // project as it is (this edit changes only the active sequence)
+                let extents: std::collections::HashMap<ItemId, (Tick, Option<Tick>)> = match (fps, s.active_sequence()) {
+                    (Some(f), Some(q)) if f != q.settings.frame_rate => q
+                        .all_tracks()
+                        .flat_map(|t| t.items.iter())
+                        .map(|i| (i.item, (crate::media_start(&s.project, i.item), crate::media_duration(&s.project, &s.media, i.item))))
+                        .collect(),
+                    _ => std::collections::HashMap::new(),
+                };
                 let p = p.clone();
-                let scaled = s.edit("Sequence Settings", |pr, _| {
+                let (scaled, conformed) = s.edit("Sequence Settings", |pr, _| {
                     if let Some(n) = str_p(&p, "name") {
                         pr.item_mut(id).ok_or(EngineError::NoSequence)?.name = n.to_string();
                     }
@@ -2291,9 +2301,18 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(h) = checked_u32_p(&p, "height", CMD)? {
                         q.settings.height = h;
                     }
+                    let old_rate = q.settings.frame_rate;
                     if let Some(f) = fps {
                         q.settings.frame_rate = f;
                     }
+                    let conformed = if q.settings.frame_rate != old_rate {
+                        q.settings.validate().map_err(|e| bad(CMD, e))?;
+                        let start = |id: ItemId| extents.get(&id).map_or(Tick::ZERO, |e| e.0);
+                        let duration = |id: ItemId| extents.get(&id).and_then(|e| e.1);
+                        edit::frame_rate::conform(q, &start, &duration)?
+                    } else {
+                        0
+                    };
                     if let Some(sr) = checked_u32_p(&p, "sampleRate", CMD)? {
                         q.settings.sample_rate = sr;
                     }
@@ -2319,9 +2338,9 @@ fn build() -> Vec<CommandSpec> {
                     q.settings.working_space = q.settings.color.working.label().into();
                     q.settings.validate().map_err(|e| bad(CMD, e))?;
                     let new_size = (q.settings.width, q.settings.height);
-                    Ok(if scale_motion { edit::frame_size::scale_motion(q, old_size, new_size) } else { 0 })
+                    Ok((if scale_motion { edit::frame_size::scale_motion(q, old_size, new_size) } else { 0 }, conformed))
                 })?;
-                Ok(json!({"scaledClips": scaled}))
+                Ok(json!({"scaledClips": scaled, "conformedClips": conformed}))
             }
         ),
         cmd!("sequence.renderEffectsInToOut", "Render Effects In to Out", ["Sequence"], Some("Enter"), r#"{"wait":bool=false}"#, has_seq, |s, p| {
