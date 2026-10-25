@@ -349,3 +349,20 @@ fn live_captions_preserve_silence_without_a_default_hold() {
     assert_eq!((blocks[0].start, blocks[0].end), (s(5.0), s(5.2)));
     assert_eq!((blocks[1].start, blocks[1].end), (s(6.0), s(6.4)));
 }
+
+#[test]
+fn live_captions_do_not_linger_over_a_pause_after_the_last_word() {
+    let mut words = seq_words(&["Hello", "world"]);
+    words[0].start = s(1.0);
+    words[0].end = s(1.3);
+    // alignment stretched the last word over 4 s of silence
+    words[1].start = s(1.3);
+    words[1].end = s(5.3);
+    let blocks = live_caption_blocks(&words, &LiveCaptionRules::default(), FrameRate::new(25, 1), &|_| true);
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0].end <= s(1.3) + s(0.7), "caption ended at {:?}", blocks[0].end);
+    let mut id = 1u64;
+    let mut ctx = EditCtx { next_id: &mut id, media_duration: &|_| None, media_start: &|_| Tick::ZERO, min_duration: Tick(1) };
+    let caps = live_blocks_to_captions(&blocks, &words, &mut ctx);
+    assert!(caps[0].words[1].end <= s(1.0));
+}
