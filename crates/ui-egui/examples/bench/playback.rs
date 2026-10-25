@@ -755,6 +755,14 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             s.execute("file.openDemoProject", json!({})).ok()?;
             s.state.active_sequence?
         }
+        // A real project: `project=<path.fcproj>@<sequence id>`
+        other if other.starts_with("project=") => {
+            let (path, id) = other.trim_start_matches("project=").rsplit_once('@')?;
+            s.execute("file.open", json!({"path": path})).ok()?;
+            let id: u64 = id.parse().ok()?;
+            s.execute("sequence.open", json!({"item": id})).ok()?;
+            s.state.active_sequence?
+        }
         _ => {
             eprintln!("unknown scenario {name}");
             return None;
