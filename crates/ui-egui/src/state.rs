@@ -856,7 +856,8 @@ pub struct TransitionDurationDraft {
 /// when it opens (`panels::sequence_settings::open`). `tab`: `general`, `color` or `vr`; the
 /// timebase is `fps_num`/`fps_den`; `mix`: `Stereo`, `Mono`, `5.1` or `Adaptive`; `working_space`:
 /// a [`filmcraft_color::WorkingSpace`] id. `scale_motion` is "Scale motion effects proportionally
-/// when changing frame size", on by default as in Premiere.
+/// when changing frame size", on by default as in Premiere. `par` is the pixel aspect ratio, which
+/// Swap Orientation inverts along with the frame size.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SequenceSettingsDraft {
@@ -872,6 +873,7 @@ pub struct SequenceSettingsDraft {
     pub fps_den: i64,
     pub width: u32,
     pub height: u32,
+    pub par: (u32, u32),
     pub scale_motion: bool,
     pub drop_frame: bool,
     pub mix: String,
@@ -894,6 +896,7 @@ impl Default for SequenceSettingsDraft {
             fps_den: 1001,
             width: 1920,
             height: 1080,
+            par: (1, 1),
             scale_motion: true,
             drop_frame: false,
             mix: "Stereo".into(),

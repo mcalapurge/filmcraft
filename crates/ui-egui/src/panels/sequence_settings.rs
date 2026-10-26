@@ -6,20 +6,23 @@
 //! tracks (`tracks.video`, `tracks.audio`); OK runs `file.newSequence`.
 //!
 //! What it changes (one `sequence.settings` command, one undo step): Timebase, Frame Size (with
-//! "Scale motion effects proportionally when changing frame size", on by default), drop-frame or
+//! "Scale motion effects proportionally when changing frame size", on by default, and a Swap
+//! Orientation button that turns 1080 x 1920 into 1920 x 1080 and back, inverting non-square
+//! pixels with it so the picture keeps its shape on its side), drop-frame or
 //! non-drop-frame timecode for the NTSC rates, audio Channel Format and Sample Rate, Maximum Render
 //! Quality, and the Color Management tab (working colour space, wide gamut, auto tone map).
 //!
 //! Premiere settings FilmCraft has no equivalent for yet are shown greyed out with their current
 //! value and a "not supported yet" hint, rather than editable and silently ignored: Editing Mode,
-//! Pixel Aspect Ratio (rendered, and set by New Sequence From Clip, but not editable here yet), Fields, the Frames and Feet + Frames display
+//! Pixel Aspect Ratio (rendered, set by New Sequence From Clip and inverted by Swap Orientation, but
+//! not otherwise editable here yet), Fields, the Frames and Feet + Frames display
 //! formats, Number of Channels, audio Display Format, the Video Previews format, codec and size,
 //! Maximum Bit Depth, and the VR Properties tab. Composite in Linear Color is shown on and greyed:
 //! FilmCraft always composites in linear light.
 //!
 //! Automation ids (`sequenceSettings.` + …): `tab.general`, `tab.color`, `tab.vr`; General:
 //! `name`, `editingMode`, `timebase` (+ `timebase.option.<num>/<den>` while open), `width`, `height`,
-//! `aspect`, `scaleMotion`, `par`, `fields`, `videoDisplay` (+ `videoDisplay.option.<df|ndf|tc>`),
+//! `swapOrientation`, `aspect`, `scaleMotion`, `par`, `fields`, `videoDisplay` (+ `videoDisplay.option.<df|ndf|tc>`),
 //! `channelFormat` (+ `channelFormat.option.<Stereo|Mono|5.1|Adaptive>`), `channels`, `sampleRate`
 //! (+ `sampleRate.option.<hz>`), `audioDisplay`, `previewFormat`, `previewCodec`, `previewWidth`,
 //! `previewHeight`, `maxBitDepth`, `maxRenderQuality`, `linearColor`; Color Management:
@@ -83,6 +86,7 @@ pub fn open(app: &mut FilmcraftApp) {
         fps_den: st.frame_rate.den,
         width: st.width,
         height: st.height,
+        par: st.par,
         scale_motion: true,
         drop_frame: st.drop_frame && st.frame_rate.supports_drop_frame(),
         mix: mix_name(st.audio_master).into(),
@@ -109,6 +113,7 @@ pub fn open_new(app: &mut FilmcraftApp) {
         fps_den: st.frame_rate.den,
         width: st.width,
         height: st.height,
+        par: st.par,
         scale_motion: true,
         drop_frame: st.drop_frame && st.frame_rate.supports_drop_frame(),
         mix: mix_name(st.audio_master).into(),
@@ -155,6 +160,14 @@ fn tracks(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
             ui.label(tl!("tracks"));
         });
     }
+}
+
+/// Swap Orientation: width and height trade places (1080 x 1920 becomes 1920 x 1080), and so do
+/// the terms of the pixel aspect ratio, so 4:3 pixels on their side are 3:4 and the display
+/// aspect is exactly the inverse.
+fn swap_orientation(d: &mut SequenceSettingsDraft) {
+    (d.width, d.height) = (d.height, d.width);
+    d.par = (d.par.1, d.par.0);
 }
 
 fn rate(d: &SequenceSettingsDraft) -> FrameRate {
@@ -227,6 +240,9 @@ fn changes(d: &SequenceSettingsDraft, cur: &SequenceSettings, cur_name: &str) ->
         p.insert("width".into(), json!(d.width));
         p.insert("height".into(), json!(d.height));
         p.insert("scaleMotion".into(), json!(d.scale_motion));
+    }
+    if filmcraft_project::sane_par(d.par) != filmcraft_project::sane_par(cur.par) {
+        p.insert("par".into(), json!([d.par.0, d.par.1]));
     }
     let df = d.drop_frame && r.supports_drop_frame();
     if df != (cur.drop_frame && cur.frame_rate.supports_drop_frame()) {
@@ -339,14 +355,19 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let h = ui.add(crate::widgets::number_drag(&mut d.height).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
             elems.push(("sequenceSettings.height".into(), h.rect, d.height.to_string()));
             ui.label(tl!("vertical"));
+            let s = ui.button(tl!("Swap")).on_hover_text(tl!("Swap Orientation: horizontal to vertical, or back"));
+            if s.clicked() {
+                swap_orientation(d);
+            }
+            elems.push(("sequenceSettings.swapOrientation".into(), s.rect, "Swap Orientation".into()));
             // the display aspect: 1440 x 1080 with 4:3 pixels is 16:9
-            let a = aspect(display_width(d.width, d.height, cur.par), d.height);
+            let a = aspect(display_width(d.width, d.height, d.par), d.height);
             let ar = ui.label(&a);
             elems.push(("sequenceSettings.aspect".into(), ar.rect, a));
         });
         let r = ui.checkbox(&mut d.scale_motion, tl!("Scale motion effects proportionally when changing frame size"));
         elems.push(("sequenceSettings.scaleMotion".into(), r.rect, d.scale_motion.to_string()));
-        row(ui, label_w, "Pixel Aspect Ratio:", false, |ui| fixed_combo(ui, elems, "par", &par_label(cur.par), list_w, NOT_YET));
+        row(ui, label_w, "Pixel Aspect Ratio:", false, |ui| fixed_combo(ui, elems, "par", &par_label(d.par), list_w, NOT_YET));
         row(ui, label_w, "Fields:", false, |ui| fixed_combo(ui, elems, "fields", "No Fields (Progressive Scan)", list_w, NOT_YET));
         row(ui, label_w, "Display Format:", true, |ui| {
             let r = rate(d);
@@ -624,6 +645,24 @@ mod tests {
         let (p, rest) = new_sequence_params(&d);
         assert!(p.get("name").is_none());
         assert_eq!(Value::Object(rest), json!({"dropFrame":true,"maxRenderQuality":true}));
+    }
+
+    #[test]
+    fn swap_orientation_trades_width_height_and_pixel_aspect() {
+        let cur = SequenceSettings::default();
+        let mut d = SequenceSettingsDraft::default();
+        swap_orientation(&mut d);
+        assert_eq!((d.width, d.height, d.par), (1080, 1920, (1, 1)));
+        // square pixels stay square: only the frame size travels
+        assert_eq!(Value::Object(changes(&d, &cur, "")), json!({"width":1080,"height":1920,"scaleMotion":true}));
+        swap_orientation(&mut d);
+        assert!(changes(&d, &cur, "").is_empty(), "swapped back: nothing to send");
+        // 4:3 pixels turn on their side with the frame, so 16:9 on screen becomes 9:16
+        let cur = SequenceSettings { width: 1440, height: 1080, par: (4, 3), ..Default::default() };
+        let mut d = SequenceSettingsDraft { width: 1440, height: 1080, par: (4, 3), ..Default::default() };
+        swap_orientation(&mut d);
+        assert_eq!(aspect(display_width(d.width, d.height, d.par), d.height), "9:16");
+        assert_eq!(Value::Object(changes(&d, &cur, "")), json!({"width":1080,"height":1440,"scaleMotion":true,"par":[3,4]}));
     }
 
     #[test]
