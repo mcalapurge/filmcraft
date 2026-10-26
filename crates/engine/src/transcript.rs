@@ -307,6 +307,7 @@ struct AudioRead {
 pub struct PendingTranscript {
     pub job: u64,
     document_epoch: u64,
+    sequence: Option<ItemId>,
     model: &'static filmcraft_speech::models::ModelInfo,
     options: Options,
     /// Clips still being read, in order, then the ones handed to the host.
@@ -353,6 +354,7 @@ fn start_host_job(
     let pj = PendingTranscript {
         job: id,
         document_epoch: s.document_epoch,
+        sequence: s.state.active_sequence,
         model,
         options,
         reads,
@@ -521,7 +523,11 @@ pub fn poll(s: &mut Session) {
                 match r {
                     Ok(_) => {
                         s.toast(format!("Transcribed {n} clip{} ({words} words)", if n == 1 { "" } else { "s" }));
-                        run_then(s, pj.then);
+                        if !pj.then.is_empty() && s.state.active_sequence != pj.sequence {
+                            s.error_toast("transcript.generate", "The active sequence changed; transcription follow-up commands were skipped");
+                        } else {
+                            run_then(s, pj.then);
+                        }
                     }
                     Err(e) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
                 }

@@ -89,7 +89,8 @@ Cancelling a job terminates the worker (Whisper can't be interrupted mid-window)
 starts a fresh one. A worker error or panic ends the job with its message and is never fatal to
 the page. At most eight speech jobs may be pending, sharing a two-hour audio budget, since the
 samples are held by both the page and the worker. Replacing the project discards unfinished
-transcription results.
+transcription results. A changed active sequence skips `then` commands with an error message;
+the transcript itself is still saved on its original media.
 
 On an Apple M-series Mac in Chrome, base transcribes about 4.3× faster than real time and tiny
 about 7×, roughly half the desktop's single-threaded speed. Peak wasm memory in the worker is

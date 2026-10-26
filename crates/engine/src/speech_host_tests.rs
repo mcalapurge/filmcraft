@@ -289,3 +289,30 @@ fn finished_transcription_cannot_edit_a_replaced_document_with_reused_ids() {
     assert_eq!(s.history.undo.len(), undo);
     assert!(s.transcript_jobs.is_empty());
 }
+
+#[test]
+fn transcription_followups_cannot_edit_a_different_active_sequence() {
+    let (mut s, host, item) = session();
+    let original = s.state.active_sequence.unwrap();
+    let id = s
+        .execute(
+            "transcript.generate",
+            json!({"items": [item.0], "then": [
+                {"command": "captions.createLive", "params": {"source": "transcript"}}
+            ]}),
+        )
+        .unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    poll_until_started(&mut s, &host, id);
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    let other = s.state.active_sequence.unwrap();
+    s.execute("timeline.place", json!({"item": item.0, "time": 0})).unwrap();
+    host.complete(id);
+    s.poll_persistence();
+    assert_eq!(s.state.active_sequence, Some(other));
+    assert!(s.project.transcripts.contains_key(&item), "the transcript still belongs to its media");
+    assert!(s.project.sequence(other).unwrap().caption_tracks.is_empty(), "followups must not edit another timeline");
+    assert!(s.project.sequence(original).unwrap().caption_tracks.is_empty());
+    assert!(toasts(&mut s).iter().any(|(m, _)| m.contains("follow-up") && m.contains("sequence")));
+}
