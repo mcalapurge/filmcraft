@@ -296,11 +296,15 @@ fn laced_remux() {
                 .map(|(ti, t)| {
                     let mut s = TrackSpec::new(t.kind, t.codec_id.clone());
                     s.codec_private = t.codec_private.clone();
-                    // audio without a DefaultDuration gets its mean packet spacing, so it can lace
-                    s.default_duration_ns = t.default_duration_ns.or_else(|| {
-                        let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
-                        (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
-                    });
+                    // Audio gets its mean packet spacing when it has no DefaultDuration, or one the
+                    // packets don't follow (ffmpeg 9 writes 64 samples for Vorbis whose packets all
+                    // hold 1024), so it can lace: the writer laces only frames on that grid.
+                    let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
+                    let spacing = (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64);
+                    s.default_duration_ns = match (t.default_duration_ns, spacing) {
+                        (Some(d), Some(m)) if d.abs_diff(m) > m / 100 => Some(m),
+                        (d, m) => d.or(m),
+                    };
                     s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
                     s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));
                     s.codec_delay_ns = t.codec_delay_ns;
