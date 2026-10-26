@@ -55,17 +55,16 @@ const TRACK_KEY: &str = "live-cap-track";
 /// The word-timed captions of `tr` too wide for one line of a `w`×`h` frame, measured once per
 /// project change (every edit makes a new project) rather than every frame.
 fn overflowing(ui: &egui::Ui, project: &std::sync::Arc<filmcraft_project::Project>, tr: &CaptionTrack, w: u32, h: u32) -> std::sync::Arc<Vec<u64>> {
-    type Cached = (usize, u64, std::sync::Arc<Vec<u64>>);
+    type Cached = (std::sync::Arc<filmcraft_project::Project>, u64, std::sync::Arc<Vec<u64>>);
     let key = egui::Id::unique("live-cap-overflow");
-    let at = std::sync::Arc::as_ptr(project) as usize;
     if let Some((p, t, ids)) = ui.data(|d| d.get_temp::<Cached>(key))
-        && p == at
+        && std::sync::Arc::ptr_eq(&p, project)
         && t == tr.id.0
     {
         return ids;
     }
     let ids = std::sync::Arc::new(filmcraft_engine::live_captions::overflowing(tr, w, h).iter().map(|c| c.0).collect::<Vec<_>>());
-    ui.data_mut(|d| d.insert_temp::<Cached>(key, (at, tr.id.0, ids.clone())));
+    ui.data_mut(|d| d.insert_temp::<Cached>(key, (project.clone(), tr.id.0, ids.clone())));
     ids
 }
 
