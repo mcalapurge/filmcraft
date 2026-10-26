@@ -105,8 +105,8 @@ popped word, so a long word stays whole even at 2× pop. A popped word may reach
 margin; the caption moves, all lines together, only when one would leave the frame, so left- or
 right-aligned lines share one edge. Caption edits that drop timed words rewrite the plain text used
 by sidecar exports from the surviving words (empty when none is left, rather than restoring the old
-sentence); otherwise the written text and its markup are kept. Inserts and overwrites preserve the
-remaining words' sequence times (words after an inserted gap move with it).
+sentence); otherwise the written text and its markup are kept. Inserts, overwrites and frame-rate
+conforms preserve the remaining words' sequence times (words after an inserted gap move with it).
 
 Text is set in the track's font (**Inter**, `assets/fonts/Inter-*.ttf`, SIL OFL 1.1, attributed in
 `ATTRIBUTION.md`, when none is chosen) in the track's font style (SemiBold by default) by the

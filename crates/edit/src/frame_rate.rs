@@ -209,8 +209,10 @@ pub fn conform(seq: &mut Sequence, media_start: &dyn Fn(ItemId) -> Tick, media_d
             }
         }
         for (c, (start, end)) in track.captions.iter_mut().zip(spans) {
+            let shift = start - c.start;
             c.start = start;
             c.duration = end - start;
+            c.shift_words(shift);
         }
     }
 
@@ -283,6 +285,30 @@ fn snap_span(rate: FrameRate, start: Tick, duration: Tick) -> (Tick, Tick) {
 mod tests {
     use super::*;
     use filmcraft_project::{Label, Project, SequenceSettings};
+
+    #[test]
+    fn conform_keeps_live_words_at_their_original_sequence_times() {
+        let mut project = Project::new("captions");
+        let id = project.new_sequence("s", SequenceSettings { frame_rate: FrameRate::FPS_30, ..Default::default() }, 1, 1, None);
+        let mut seq = project.sequence(id).unwrap().clone();
+        let start = FrameRate::FPS_23_976.tick_of(1);
+        let word_start = Tick::from_seconds_f64(0.02);
+        let mut track = filmcraft_project::CaptionTrack::new(filmcraft_project::TrackId(900), "Live".into(), filmcraft_project::CaptionFormat::Subtitle);
+        track.captions.push(filmcraft_project::Caption {
+            id: ClipId(901),
+            start,
+            duration: Tick::from_seconds_f64(1.0),
+            text: "hello".into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: vec![filmcraft_project::CaptionWord { text: "hello".into(), start: word_start, end: word_start + Tick::from_seconds_f64(0.3) }],
+        });
+        seq.caption_tracks.push(track);
+        conform(&mut seq, &|_| Tick::ZERO, &|_| None).unwrap();
+        let caption = &seq.caption_tracks[0].captions[0];
+        assert_eq!(caption.start + caption.words[0].start, start + word_start, "the new caption edge must not shift spoken words");
+    }
 
     fn clip(id: u64, start: Tick, duration: Tick, source_in: Tick) -> TrackItem {
         TrackItem {
