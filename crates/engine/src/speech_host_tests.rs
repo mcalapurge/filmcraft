@@ -274,3 +274,18 @@ fn pending_speech_jobs_are_bounded() {
     assert!(s.execute("transcript.downloadModel", json!({"model": "whisper-tiny"})).is_err());
     assert_eq!(s.jobs.len(), jobs, "a rejected request must not allocate another job");
 }
+
+#[test]
+fn finished_transcription_cannot_edit_a_replaced_document_with_reused_ids() {
+    let (mut s, host, item) = session();
+    let id = s.execute("transcript.generate", json!({"items": [item.0]})).unwrap()["job"].as_u64().unwrap();
+    poll_until_started(&mut s, &host, id);
+    host.complete(id);
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    s.poll_persistence();
+    assert!(Arc::ptr_eq(&s.project, &before), "a job belongs to the document that started it");
+    assert_eq!(s.history.undo.len(), undo);
+    assert!(s.transcript_jobs.is_empty());
+}

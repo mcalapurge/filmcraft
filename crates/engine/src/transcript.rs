@@ -306,6 +306,7 @@ struct AudioRead {
 /// A [`SpeechHost`] job: reading its audio, then running on the host; applied by [`poll`].
 pub struct PendingTranscript {
     pub job: u64,
+    document_epoch: u64,
     model: &'static filmcraft_speech::models::ModelInfo,
     options: Options,
     /// Clips still being read, in order, then the ones handed to the host.
@@ -349,7 +350,17 @@ fn start_host_job(
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(1000, Ordering::Relaxed);
     let reads: Vec<AudioRead> = items.iter().map(|&item| AudioRead { item, samples: Vec::new(), len: 0 }).collect();
-    let pj = PendingTranscript { job: id, model, options, reads, skipped: Vec::new(), started: false, transcripts: Arc::default(), then };
+    let pj = PendingTranscript {
+        job: id,
+        document_epoch: s.document_epoch,
+        model,
+        options,
+        reads,
+        skipped: Vec::new(),
+        started: false,
+        transcripts: Arc::default(),
+        then,
+    };
     if pj.reads.is_empty() {
         *lock(&job.progress.status) = format!("Downloading {}", model.name);
     } else {
@@ -426,6 +437,14 @@ fn read_audio(s: &Session, pj: &mut PendingTranscript, progress: &filmcraft_expo
 fn poll_one(s: &mut Session, host: &dyn SpeechHost, i: usize) {
     let Some(id) = s.transcript_jobs.get(i).map(|pj| pj.job) else { return };
     let Some(job) = s.jobs.iter().find(|j| j.id == id).cloned() else { return };
+    if s.transcript_jobs.get(i).is_some_and(|pj| pj.document_epoch != s.document_epoch && (!pj.reads.is_empty() || !pj.skipped.is_empty())) {
+        job.progress.cancel.store(true, Ordering::Relaxed);
+        if !job.progress.finished.load(Ordering::Relaxed) {
+            host.cancel(id);
+        }
+        finish(&job.progress, &job.result, Err("the project changed while transcribing; the result was discarded".into()));
+        return;
+    }
     if job.progress.finished.load(Ordering::Relaxed) {
         return;
     }
