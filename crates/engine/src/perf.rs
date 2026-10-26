@@ -48,16 +48,36 @@ pub fn decode_json() -> Value {
     })
 }
 
-/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; and the wall
-/// time of each export stage in milliseconds (`stages`: setup, loudness, render, encode with its
-/// `convert` part, audio, mux, finish, wait), summed over the exports of this process (diff two readings).
-/// Render and encode overlap (the next batch renders while this one is encoded), so their sum can exceed
-/// the export's wall time; `waitMs` is the encoding side's idle wait for the render.
+/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; frames the
+/// GPU renderer drew vs. sent back to the CPU (`gpu`); and the wall time of each export stage in
+/// milliseconds (`stages`: setup, loudness, render, encode with its `convert` part, audio, mux,
+/// finish, wait, and the parts of render: gpuRender, cpuRender, post, rendererWait), summed over the
+/// exports of this process (diff two readings). Render and encode overlap (the next batch renders
+/// while this one is encoded), so their sum can exceed the export's wall time; `waitMs` is the
+/// encoding side's idle wait for the render. The parts of render are summed over its threads.
 pub fn export_json() -> Value {
     let hw = filmcraft_export::hw_encode_stats();
+    let gpu = filmcraft_export::gpu_render_stats();
     let stages: serde_json::Map<String, Value> =
         filmcraft_export::stage_times().into_iter().map(|(s, ns)| (format!("{}Ms", s.name()), json!(ns as f64 / 1e6))).collect();
-    json!({"hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined}, "stages": stages})
+    json!({
+        "hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined},
+        "gpu": {"frames": gpu.frames, "cpuFrames": gpu.fallbacks},
+        "stages": stages,
+    })
+}
+
+/// Why GPU frame plans (playback and export) sent work to the CPU: whole `frames` and single
+/// `layers`, and the count per reason (`reasons`, highest first: `effect:<id>`,
+/// `transition:<id>`, `opacityMask`, …; see `filmcraft_render::fallback`). Cumulative.
+pub fn render_json() -> Value {
+    use filmcraft_render::fallback::{self, Scope};
+    let (frames, layers) = fallback::totals();
+    let reasons: Vec<Value> = fallback::counts()
+        .into_iter()
+        .map(|(s, f, n)| json!({"reason": f.key(), "scope": if s == Scope::Frame { "frame" } else { "layer" }, "count": n}))
+        .collect();
+    json!({"cpuFallbacks": {"frames": frames, "layers": layers, "reasons": reasons}})
 }
 
 /// The engine's `perf.stats`.
@@ -66,6 +86,7 @@ pub fn stats(s: &Session) -> Value {
     json!({
         "decode": decode_json(),
         "export": export_json(),
+        "render": render_json(),
         "media": {"openSources": s.media.open_sources()},
         "jobs": {"total": s.jobs.len(), "running": running},
     })
@@ -111,9 +132,28 @@ mod tests {
         for k in ["frames", "sessions", "declined"] {
             assert!(v["export"]["hardware"][k].is_number(), "export.hardware.{k} in {v}");
         }
-        for k in ["setupMs", "loudnessMs", "renderMs", "encodeMs", "convertMs", "audioMs", "muxMs", "finishMs", "waitMs"] {
+        for k in [
+            "setupMs",
+            "loudnessMs",
+            "renderMs",
+            "encodeMs",
+            "convertMs",
+            "audioMs",
+            "muxMs",
+            "finishMs",
+            "waitMs",
+            "gpuRenderMs",
+            "cpuRenderMs",
+            "postMs",
+            "rendererWaitMs",
+        ] {
             assert!(v["export"]["stages"][k].is_number(), "export.stages.{k} in {v}");
         }
+        for k in ["frames", "cpuFrames"] {
+            assert!(v["export"]["gpu"][k].is_number(), "export.gpu.{k} in {v}");
+        }
+        let fb = &v["render"]["cpuFallbacks"];
+        assert!(fb["frames"].is_number() && fb["layers"].is_number() && fb["reasons"].is_array(), "render.cpuFallbacks in {v}");
         assert!(v["media"]["openSources"].is_number());
         assert_eq!(v["jobs"]["running"], json!(0));
         assert_eq!(s.history.undo.len(), undo, "a query adds no undo step");

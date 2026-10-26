@@ -384,8 +384,11 @@ fn gpu_hook_scenarios() {
     // 2. Producing renderer: counters up and its picture reaches the export.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
+    let gpu_ns = || crate::stage_times().into_iter().find(|(s, _)| *s == crate::Stage::GpuRender).map_or(0, |(_, ns)| ns);
+    let before = gpu_ns();
     mk(&tmp("fake-gpu.png"), Some(true));
     assert!(gpu_render_stats().frames >= 2, "gpu frames counted: {:?}", gpu_render_stats());
+    assert!(gpu_ns() > before, "the GPU renderer's time is its own stage");
     assert_eq!(gpu_render_stats().fallbacks, 0);
     mk(&tmp("fake-off.png"), Some(false));
     assert_eq!(gpu_render_stats().fallbacks, 0, "Off must not count as fallback");

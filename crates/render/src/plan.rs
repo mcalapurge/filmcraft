@@ -27,6 +27,7 @@ use filmcraft_media::FrameRequest;
 use filmcraft_project::{ItemId, ItemKind, Project, Sequence, TrackItem};
 use filmcraft_time::Tick;
 
+use crate::fallback::{Fallback, Scope};
 use crate::gpufx::FxOp;
 use crate::{Blend, RenderOptions, SourceProvider, motion_matrix, output_size};
 
@@ -269,12 +270,14 @@ fn gpu_effects(item: &TrackItem, opts: RenderOptions) -> Option<Vec<&filmcraft_p
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
-    if whole_frame_on_cpu(project, seq, t) {
+    if let Some(why) = frame_cause(project, seq, t) {
+        crate::fallback::note(Scope::Frame, why);
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     let mut layers = PlanStack::default();
     push_tracks(project, seq, t, opts, sources, 0, &mut layers);
     if layers.exhausted {
+        crate::fallback::note(Scope::Frame, Fallback::LayerLimit);
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     if opts.depth == 0 && !opts.working_output && !seq.settings.color.is_plain() {
@@ -291,6 +294,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
     }
     if layers.exhausted {
+        crate::fallback::note(Scope::Frame, Fallback::LayerLimit);
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     layers.finish(w, h)
@@ -303,6 +307,13 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
 }
 
+/// Why [`plan_frame`] hands the frame at `t` back as one CPU image, if it does (None also for a
+/// missing sequence, which renders nothing). Callers that render such a frame on the CPU without
+/// planning it (the export's pool) record it with [`crate::fallback::note`].
+pub fn cpu_frame_cause(project: &Project, seq_id: ItemId, t: Tick) -> Option<Fallback> {
+    project.sequence(seq_id).and_then(|seq| frame_cause(project, seq, t))
+}
+
 /// Frames with unsupported adjustment geometry/masks or complex transitions retain the
 /// whole-frame CPU fallback. HDR/wide-gamut output is a planned canvas colour transform.
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
@@ -313,6 +324,11 @@ fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
 /// transition the compositor cannot mix itself is showing (a transition into or out of an
 /// adjustment layer counts, also on the side of the cut where the other clip is).
 pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
+    frame_cause(project, seq, t).is_none()
+}
+
+/// What keeps the frame of `seq` at `t` from planning as layers ([`layered_at`]).
+fn frame_cause(project: &Project, seq: &Sequence, t: Tick) -> Option<Fallback> {
     let adjustment = |it: &TrackItem| project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }));
     for tr in &seq.video_tracks {
         if !tr.enabled {
@@ -320,30 +336,80 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
             if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
-                return false;
+                return Some(Fallback::transition(&trn.effect));
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
-                return false;
+                return Some(Fallback::AdjustmentTransition);
             }
         }
         if let Some(it) = tr.item_at(t)
             && adjustment(it)
             && adjustment_ops(project, seq, it, t, 1.0).is_none()
         {
-            return false;
+            return Some(adjustment_cause(seq, it, t));
         }
     }
-    true
+    None
+}
+
+/// Why [`adjustment_ops`] declined an adjustment layer: its own masks, opacity, blend or Motion,
+/// else the first effect the GPU can't run.
+fn adjustment_cause(seq: &Sequence, item: &TrackItem, t: Tick) -> Fallback {
+    if !adjustment_is_plain(seq, item, item.source_time_at(t)) {
+        return Fallback::AdjustmentLayer;
+    }
+    let mut effects = item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic));
+    unsupported_effect(effects.clone()).or_else(|| effects.next().map(Fallback::effect_values)).unwrap_or(Fallback::AdjustmentLayer)
+}
+
+/// The first of `effects` the GPU can't run at all: one with a mask, or one without a GPU
+/// implementation.
+fn unsupported_effect<'a>(effects: impl IntoIterator<Item = &'a filmcraft_project::EffectInstance>) -> Option<Fallback> {
+    effects.into_iter().find_map(|e| {
+        if e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) {
+            Some(Fallback::MaskedEffect)
+        } else if !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+            Some(Fallback::effect(e))
+        } else {
+            None
+        }
+    })
+}
+
+/// Why [`push_item`] renders `item` as a CPU layer, checked in the order its GPU paths are tried.
+fn layer_cause(project: &Project, item: &TrackItem, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Fallback {
+    let mut effects =
+        item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)).filter(|_| opts.effects);
+    if let Some(why) = unsupported_effect(effects.clone()) {
+        return why;
+    }
+    if item.has_opacity_masks() {
+        return Fallback::OpacityMask;
+    }
+    match project.item(item.item).map(|p| &p.kind) {
+        Some(ItemKind::Sequence(_)) => return Fallback::Nest,
+        Some(ItemKind::Media(_) | ItemKind::Subclip { .. }) => {}
+        _ => return Fallback::NotMedia,
+    }
+    if sources.source(item.item).is_some_and(|src| crate::interpolation_blend(item, t, src.info().frame_rate()).is_some()) {
+        return Fallback::FrameBlending;
+    }
+    effects.next().map_or(Fallback::ColorManagement, Fallback::effect_values)
+}
+
+/// Whether an adjustment layer applies its effects to the whole frame below as it is: no masks,
+/// fully opaque, Normal, untransformed (at its source time `mt`).
+fn adjustment_is_plain(seq: &Sequence, item: &TrackItem, mt: Tick) -> bool {
+    let (opacity, blend) = crate::opacity_blend(item, mt);
+    !item.has_opacity_masks()
+        && (opacity - 1.0).abs() <= 1e-6
+        && blend == Blend::Normal
+        && near_identity(&motion_matrix(seq, item, (seq.settings.width, seq.settings.height), None, mt))
 }
 
 fn adjustment_ops(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, scale: f32) -> Option<Vec<FxOp>> {
     let mt = item.source_time_at(t);
-    let (opacity, blend) = crate::opacity_blend(item, mt);
-    if item.has_opacity_masks()
-        || (opacity - 1.0).abs() > 1e-6
-        || blend != Blend::Normal
-        || !near_identity(&motion_matrix(seq, item, (seq.settings.width, seq.settings.height), None, mt))
-    {
+    if !adjustment_is_plain(seq, item, mt) {
         return None;
     }
     let (w, h) = output_size(seq, scale);
@@ -651,6 +717,7 @@ fn push_item(
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
+    crate::fallback::note(Scope::Layer, layer_cause(project, item, t, opts, sources));
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));

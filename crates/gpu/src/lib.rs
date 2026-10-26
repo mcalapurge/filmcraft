@@ -36,6 +36,7 @@ use rayon::prelude::*;
 use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
+use filmcraft_render::fallback::{self, Fallback, Scope};
 use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
@@ -765,6 +766,7 @@ impl GpuCompositor {
                 if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
                     return None;
                 }
+                fallback::note(Scope::Layer, if self.fx.is_none() { Fallback::NoEffectStage } else { Fallback::TextureSize });
                 let img = filmcraft_render::plan::effect_image_with(&l.frame, lfx, l.input.as_deref());
                 Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
             })
@@ -962,10 +964,20 @@ impl GpuCompositor {
 
     fn draw_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
         let max_side = self.device.limits().max_texture_dimension_2d;
-        if (self.fx.is_none() && steps.iter().any(|s| matches!(s, PlanStep::Effects(_) | PlanStep::Nest { .. })))
-            || steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"))
-            || steps.iter().any(|s| matches!(s, PlanStep::Nest { size, .. } if size.0.max(size.1) > max_side))
-        {
+        let declined = if self.fx.is_none() && steps.iter().any(|s| matches!(s, PlanStep::Effects(_) | PlanStep::Nest { .. })) {
+            Some(Fallback::NoEffectStage)
+        } else if let Some(effect) = steps.iter().find_map(|s| match s {
+            PlanStep::Transition { effect, .. } if effect.effect != "push" => Some(effect),
+            _ => None,
+        }) {
+            Some(Fallback::transition(effect))
+        } else if steps.iter().any(|s| matches!(s, PlanStep::Nest { size, .. } if size.0.max(size.1) > max_side)) {
+            Some(Fallback::TextureSize)
+        } else {
+            None
+        };
+        if let Some(why) = declined {
+            fallback::note(Scope::Frame, why);
             self.cpu_transitions += 1;
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             return self.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None);
@@ -977,6 +989,7 @@ impl GpuCompositor {
             match step {
                 PlanStep::Effects(ops) => {
                     if !self.apply_canvas_fx(ops, dims) {
+                        fallback::note(Scope::Frame, Fallback::CompositorSteps);
                         let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
                         return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, true);
                     }
@@ -1001,6 +1014,7 @@ impl GpuCompositor {
                 PlanStep::Nest { layers, size, ops, matrix, opacity, blend } => {
                     let p = children.as_mut().and_then(Iterator::next);
                     if !self.draw_nest(layers, *size, ops, matrix, *opacity, *blend, p, dims) {
+                        fallback::note(Scope::Frame, Fallback::CompositorSteps);
                         let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
                         return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, true);
                     }
@@ -1136,7 +1150,13 @@ impl GpuCompositor {
     /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
     /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
-        if matches!(plan, FramePlan::Composite { steps,.. } if steps.iter().any(|s|matches!(s,PlanStep::Transition{..}))) {
+        if let FramePlan::Composite { steps, .. } = plan
+            && let Some(effect) = steps.iter().find_map(|s| match s {
+                PlanStep::Transition { effect, .. } => Some(effect),
+                _ => None,
+            })
+        {
+            fallback::note(Scope::Frame, Fallback::transition(effect));
             return None;
         }
         let t = std::time::Instant::now();

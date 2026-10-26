@@ -9,11 +9,11 @@ use std::sync::Arc;
 use filmcraft_geom::Vec2;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
-use filmcraft_time::FrameRate;
+use filmcraft_time::{FrameRate, Tick};
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, Stage, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -257,13 +257,25 @@ impl Pipeline {
         // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
         // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
         // many frames at a time as there are renderers instead of one per export thread.
-        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        // (`plan::is_cpu_frame`, with the reason counted for `perf.stats`)
+        let pool = self.renderer.as_ref().filter(|_| {
+            if self.project.sequence(self.seq).is_none() {
+                return false;
+            }
+            match filmcraft_render::plan::cpu_frame_cause(&self.project, self.seq, t) {
+                Some(why) => {
+                    filmcraft_render::fallback::note(filmcraft_render::fallback::Scope::Frame, why);
+                    false
+                }
+                None => true,
+            }
+        });
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                    crate::timed(Stage::GpuRender, || r.render(&self.project, self.seq, t, self.opts, sources))
                 })
                 .flatten()
             }
@@ -278,9 +290,15 @@ impl Pipeline {
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
-                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+                crate::timed(Stage::CpuRender, || filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources))
             }
         };
+        crate::timed(Stage::Post, || self.finish(img, t))
+    }
+
+    /// The rendered picture `img` of time `t` as the output frame: placed, overlaid, limited and
+    /// converted to RGBA8 (or the HDR floats).
+    fn finish(&self, img: Image, t: Tick) -> (Vec<u8>, Vec<f32>) {
         let mut img = self.place(img);
         self.overlays(&mut img, t);
         let lim = &self.effects.video_limiter;
