@@ -2483,6 +2483,9 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
+                if edit_text_field(ctx, &id) {
+                    continue;
+                }
                 if let Err(e) = menus::invoke(self, ctx, &id, json!({})) {
                     self.ui.status = e;
                 }
@@ -2780,6 +2783,37 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         }
         panels::voiceover::mix_cues(buf, ch, cursor, &cues);
     }
+}
+
+/// Sends an Edit menu command to the focused text field instead of running it, as a native app's
+/// Edit menu acts on the field being typed in. The macOS menu bar takes Cmd+A, Cmd+C, Cmd+Z… as
+/// key equivalents before the window sees the key, so without this, Cmd+A while renaming a bin,
+/// clip or sequence selected every clip in the Timeline and never reached the name. Returns
+/// whether the field took the command.
+fn edit_text_field(ctx: &egui::Context, id: &str) -> bool {
+    use egui::{Key, Modifiers, ViewportCommand};
+    if !ctx.text_edit_focused() {
+        return false;
+    }
+    let key = |key: Key, modifiers: Modifiers| egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+    // copy, cut and paste go through the window so they reach the system clipboard (next pass)
+    let event = match id {
+        "edit.selectAll" => key(Key::A, Modifiers::COMMAND),
+        "edit.undo" => key(Key::Z, Modifiers::COMMAND),
+        "edit.redo" => key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT),
+        "edit.copy" => return request(ctx, ViewportCommand::RequestCopy),
+        "edit.cut" => return request(ctx, ViewportCommand::RequestCut),
+        "edit.paste" => return request(ctx, ViewportCommand::RequestPaste),
+        _ => return false,
+    };
+    ctx.input_mut(|i| i.events.push(event));
+    true
+}
+
+fn request(ctx: &egui::Context, command: egui::ViewportCommand) -> bool {
+    ctx.send_viewport_cmd(command);
+    ctx.request_repaint();
+    true
 }
 
 /// The windowing layer (egui-winit, and egui's web backend) reports the clipboard shortcuts as
