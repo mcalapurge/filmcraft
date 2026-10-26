@@ -293,6 +293,7 @@ fn clear_range(tr: &mut CaptionTrack, a: Tick, b: Tick, min: Tick, ctx: &mut Edi
         if s < a && a - s >= min {
             let mut l = c.clone();
             l.duration = a - s;
+            l.clamp_words();
             out.push(l);
             kept_left = true;
         }
@@ -304,6 +305,7 @@ fn clear_range(tr: &mut CaptionTrack, a: Tick, b: Tick, min: Tick, ctx: &mut Edi
             }
             r.start = b;
             r.duration = e - b;
+            r.shift_words(b - s);
             out.push(r);
         }
     }
@@ -353,6 +355,16 @@ pub fn insert_gap(tr: &mut CaptionTrack, at: Tick, dur: Tick, ctx: &mut EditCtx)
         right.cue_id = None;
         if let Some(l) = tr.caption_mut(c.id) {
             l.duration = at - c.start;
+            if !l.words.is_empty() {
+                let offset = at - c.start;
+                let cut = l.words.partition_point(|w| w.start < offset);
+                right.words = l.words.split_off(cut);
+                right.shift_words(offset);
+                l.clamp_words();
+                // An empty half must not retain the full original caption as plain text.
+                l.text = l.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                right.text = right.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            }
         }
         tr.captions.push(right);
         tr.sort();
@@ -389,12 +401,16 @@ pub fn extract_range(tr: &mut CaptionTrack, range: TimeRange) {
                         a
                     }
                 };
+                let timed = !c.words.is_empty();
                 c.words.retain(|w| !(s + w.start >= a && s + w.end <= b));
                 for w in &mut c.words {
                     w.start = map(s + w.start) - c.start;
                     w.end = map(s + w.end) - c.start;
                 }
                 c.clamp_words();
+                if timed {
+                    c.text = c.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+                }
                 out.push(c);
             }
         }
@@ -588,5 +604,64 @@ mod tests {
         let c = tr.caption(id).unwrap();
         assert_eq!(c.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["one", "three", "four"]);
         assert_eq!(c.words[1].start, w[1].start, "closed up behind the cut");
+        assert_eq!(c.text, "one three four", "caption sidecars must match the words drawn");
+    }
+
+    #[test]
+    fn inserting_a_gap_splits_live_words_and_moves_the_right_half() {
+        let (mut seq, tid) = seq_with(&[(0, 4000, "")]);
+        word_timed(&mut seq, tid);
+        let at = seq.caption_tracks[0].captions[0].words[2].start;
+        let mut next = 5000;
+        insert_gap(seq.caption_track_mut(tid).unwrap(), at, Tick(500), &mut ctx(&mut next));
+        let caps = &seq.caption_tracks[0].captions;
+        assert_eq!(caps[0].text, "one two");
+        assert_eq!(caps[1].text, "three four");
+        assert_eq!(caps[1].words[0].start, Tick::ZERO);
+        assert_eq!(caps[1].start, at + Tick(500));
+        seq.check().unwrap();
+    }
+
+    #[test]
+    fn overwriting_live_captions_keeps_only_the_surviving_words() {
+        let (mut seq, tid) = seq_with(&[(0, 4000, "")]);
+        let id = word_timed(&mut seq, tid);
+        let words = seq.caption_tracks[0].captions[0].words.clone();
+        let replacement = Caption {
+            id: ClipId(0),
+            start: words[1].start,
+            duration: words[2].start - words[1].start,
+            text: "replacement".into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: Vec::new(),
+        };
+        let mut next = 5000;
+        overwrite_captions(&mut seq, tid, &[replacement], &mut ctx(&mut next)).unwrap();
+        let caps = &seq.caption_tracks[0].captions;
+        assert_eq!(caps[0].id, id);
+        assert_eq!(caps[0].text, "one");
+        assert_eq!(caps[2].text, "three four");
+        assert_eq!(caps[2].words[0].start, Tick::ZERO);
+        assert_eq!(caps[2].start + caps[2].words[1].start, words[3].start);
+        seq.check().unwrap();
+    }
+
+    #[test]
+    fn trimming_all_live_words_does_not_restore_the_old_plain_text() {
+        let (mut seq, tid) = seq_with(&[(0, 4000, "")]);
+        let id = word_timed(&mut seq, tid);
+        let c = seq.caption_track_mut(tid).unwrap().caption_mut(id).unwrap();
+        for w in &mut c.words {
+            w.start += Tick(1000);
+            w.end += Tick(1000);
+        }
+        c.duration = Tick(5000);
+        let mut next = 5000;
+        trim_caption(&mut seq, id, Edge::Out, Tick(-4500), &ctx(&mut next)).unwrap();
+        let c = seq.caption_tracks[0].caption(id).unwrap();
+        assert!(c.words.is_empty());
+        assert!(c.text.is_empty(), "removed speech must not reappear as an ordinary caption");
     }
 }

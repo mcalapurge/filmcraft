@@ -313,15 +313,27 @@ impl Caption {
     }
 
     /// Keep the words inside the caption, in order and not overlapping; a word wholly outside it
-    /// is dropped.
+    /// is dropped. Dropping a word rewrites the plain text from the words left (empty when none
+    /// is), so sidecars match what is drawn; otherwise the text, with its markup, is kept.
     pub fn clamp_words(&mut self) {
+        if self.words.is_empty() {
+            return;
+        }
         let dur = self.duration.max(Tick::ZERO);
+        let before = self.words.len();
         self.words.retain(|w| w.end > Tick::ZERO && w.start < dur && !w.text.trim().is_empty());
         let mut prev = Tick::ZERO;
         for w in &mut self.words {
             w.start = w.start.clamp(prev, dur);
             w.end = w.end.clamp(w.start, dur);
             prev = w.end;
+        }
+        // A word pushed to the end by the one before it has no time left: drop it now, as the
+        // next pass would (`start < dur` above), so a second clamp changes nothing. Every later
+        // word was pushed there too, so the words kept are unchanged.
+        self.words.retain(|w| w.start < dur);
+        if self.words.len() != before {
+            self.text = self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
         }
     }
 
@@ -645,6 +657,43 @@ mod tests {
         c.shift_words(Tick(i64::MAX));
         assert!(spread_words(&["x".into()], Tick(i64::MAX), Tick(i64::MIN)).iter().all(|w| w.start == w.end));
         assert!(spread_words(&[], Tick(0), Tick(10)).is_empty());
+    }
+
+    /// Review fix: clamping words that all still fit keeps the caption's own text (its markup and
+    /// line breaks go to sidecar exports); only dropping a word rewrites it.
+    #[test]
+    fn clamping_words_that_still_fit_keeps_the_written_text() {
+        let mut c = timed("<i>one</i>\ntwo", 100, &[("one", 0, 40), ("two", 50, 90)]);
+        c.clamp_words();
+        assert_eq!(c.text, "<i>one</i>\ntwo");
+        c.duration = Tick(45);
+        c.clamp_words();
+        assert_eq!(c.text, "one", "a dropped word leaves the text");
+    }
+
+    /// Clamping is a fixed point: a second pass (the next open, the next edit) changes nothing. A
+    /// word pushed to the caption's end by the word before it has no time left and is dropped
+    /// at once, not kept at zero length and dropped on the next pass.
+    #[test]
+    fn clamping_words_twice_changes_nothing() {
+        let cases: [&[(&str, i64, i64)]; 5] = [
+            &[("hello", 0, 100), ("world", 50, 90)],
+            &[("a", 0, 60), ("b", 50, 101)],
+            &[("a", -10, 5), ("b", 5, 5), ("c", 90, 200), ("d", 95, 99)],
+            &[("a", 0, 100), ("b", 100, 100)],
+            &[("a", i64::MIN, i64::MAX), ("b", 0, 1)],
+        ];
+        for words in cases {
+            let mut once = timed("t", 100, words);
+            once.clamp_words();
+            let mut twice = once.clone();
+            twice.clamp_words();
+            assert_eq!(once, twice, "{words:?}");
+        }
+        let mut c = timed("hello world", 100, &[("hello", 0, 100), ("world", 50, 90)]);
+        c.clamp_words();
+        assert_eq!(c.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["hello"]);
+        assert_eq!(c.text, "hello");
     }
 
     #[test]
