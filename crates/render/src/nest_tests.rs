@@ -328,10 +328,10 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
         ("half-transparent nest", |r, _, outer, nest| {
             r.clip(outer, nest).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
         }),
-        ("nest with an effect", |r, _, outer, nest| {
-            let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
-            crop.params.get_mut("left").unwrap().value = ParamValue::Float(30.0);
-            r.clip(outer, nest).effects.push(crop);
+        ("nest with an effect the GPU does not run", |r, _, outer, nest| {
+            let mut mosaic = filmcraft_project::effect::find_effect("mosaic").unwrap().instance();
+            mosaic.params.get_mut("horizontal").unwrap().value = ParamValue::Float(12.0);
+            r.clip(outer, nest).effects.push(mosaic);
         }),
         ("a blend mode inside the nest", |r, inner, _, _| {
             let top = &mut r.p.sequence_mut(inner).unwrap().video_tracks[1].items[0];
@@ -358,6 +358,101 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
         let w = worst(&r.planned(outer, t), &r.frame(outer, t));
         assert!(w < 0.01, "{what}: plan and reference differ by {w}");
     }
+}
+
+/// The nest steps of a plan (see [`plan::PlanStep::Nest`]).
+fn nest_steps(r: &Rig, seq: ItemId, t: Tick) -> usize {
+    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), &r.map) {
+        plan::FramePlan::Composite { steps, .. } => steps.iter().filter(|s| matches!(s, plan::PlanStep::Nest { .. })).count(),
+        _ => 0,
+    }
+}
+
+#[test]
+fn a_nest_with_effects_the_gpu_runs_is_planned_for_the_gpu() {
+    // e.g. Lumetri Color on a 2160x3840 nest at 56.25 % in a 1080x1920 sequence: the nest's
+    // clips, its effects and its placement all go to the compositor, instead of the CPU rendering
+    // the nested sequence and its effects every frame (that made such nests unplayable)
+    let t = FrameRate::FPS_24.tick_of(20);
+    let lumetri = |r: &mut Rig, outer: ItemId, nest: ClipId| {
+        let mut e = filmcraft_project::effect::find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("exposure").unwrap().value = ParamValue::Float(0.6);
+        e.params.get_mut("saturation").unwrap().value = ParamValue::Float(150.0);
+        r.clip(outer, nest).effects.push(e);
+    };
+    let cases: [(&str, fn(&mut Rig, ItemId, ItemId, ClipId)); 4] = [
+        ("unscaled", |_, _, _, _| {}),
+        ("half transparent, scaled and rotated", |r, _, outer, nest| {
+            let c = r.clip(outer, nest);
+            c.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(60.0);
+            let m = c.effect_mut("motion").unwrap();
+            m.params.get_mut("scale").unwrap().value = ParamValue::Float(45.0);
+            m.params.get_mut("rotation").unwrap().value = ParamValue::Float(20.0);
+        }),
+        ("in a smaller sequence", |r, inner, outer, nest| {
+            let (w, h) = {
+                let i = &r.p.sequence(inner).unwrap().settings;
+                (i.width / 2, i.height / 2)
+            };
+            let o = &mut r.p.sequence_mut(outer).unwrap().settings;
+            (o.width, o.height) = (w, h);
+            r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(56.25);
+        }),
+        ("with a crop too, and its inner clip reaching outside its frame", |r, inner, outer, nest| {
+            let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+            crop.params.get_mut("left").unwrap().value = ParamValue::Float(30.0);
+            r.clip(outer, nest).effects.push(crop);
+            let top = &mut r.p.sequence_mut(inner).unwrap().video_tracks[1].items[0];
+            top.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(400.0);
+        }),
+    ];
+    for (what, change) in cases {
+        let mut r = Rig::new();
+        let (inner, outer, nest) = two_layer_nest(&mut r);
+        let under = r.matte([0.0, 1.0, 0.0, 1.0], 64, 64);
+        let rate = FrameRate::FPS_24;
+        let nest_clip = r.p.sequence_mut(outer).unwrap().video_tracks[0].items.remove(0);
+        let mut below = r.p.make_track_item(under, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(96)), rate).unwrap();
+        below.scale_to_frame = true;
+        let s = r.p.sequence_mut(outer).unwrap();
+        s.video_tracks[0].items.push(below);
+        s.video_tracks[1].items.push(nest_clip);
+        lumetri(&mut r, outer, nest);
+        change(&mut r, inner, outer, nest);
+        assert_eq!(nest_steps(&r, outer, t), 1, "{what}");
+        let w = worst(&r.planned(outer, t), &r.frame(outer, t));
+        assert!(w < 1e-5, "{what}: plan and reference differ by {w}");
+        // and nested once more, as a plain nest of the nest
+        let (ow, oh) = (r.p.sequence(outer).unwrap().settings.width, r.p.sequence(outer).unwrap().settings.height);
+        let outermost = r.seq("outermost", ow, oh, rate);
+        r.put(outermost, outer, 96);
+        // (a nest wider than its frame is cropped there by the plain nest around it: that one is
+        // then rendered as a picture)
+        let spills = what == "in a smaller sequence";
+        assert_eq!(nest_steps(&r, outermost, t), usize::from(!spills), "{what}, nested again");
+        let w = worst(&r.planned(outermost, t), &r.frame(outermost, t));
+        assert!(w < 1e-5, "{what}, nested again: plan and reference differ by {w}");
+    }
+}
+
+#[test]
+fn nests_with_effects_inside_nests_with_effects_are_drawn_right() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = two_layer_nest(&mut r);
+    let invert = filmcraft_project::effect::find_effect("invert").unwrap().instance();
+    r.clip(outer, nest).effects.push(invert.clone());
+    let (w, h) = (r.p.sequence(outer).unwrap().settings.width, r.p.sequence(outer).unwrap().settings.height);
+    let outermost = r.seq("outermost", w / 2, h / 2, FrameRate::FPS_24);
+    let again = r.put(outermost, outer, 96);
+    let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+    crop.params.get_mut("top").unwrap().value = ParamValue::Float(20.0);
+    let c = r.clip(outermost, again);
+    c.effects.push(crop);
+    c.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    let t = FrameRate::FPS_24.tick_of(20);
+    assert_eq!(nest_steps(&r, outermost, t), 1);
+    let w = worst(&r.planned(outermost, t), &r.frame(outermost, t));
+    assert!(w < 1e-5, "plan and reference differ by {w}");
 }
 
 #[test]
