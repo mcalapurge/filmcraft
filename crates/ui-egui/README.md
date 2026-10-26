@@ -169,3 +169,10 @@ The theme installs every embedded craft-fonts script as a fallback after its ord
 Chinese and right-to-left faces. Font-picker samples (including Devanagari) therefore draw safely
 in every UI family and theme. Builds without craft-fonts retain their bundled/system fallback
 behavior; no new font files are stored in this repository.
+
+## Colour test GPU selection
+
+`FILMCRAFT_UI_TEST_GPU=1 cargo test -p filmcraft-ui-egui --test it color_ui`
+enables the offscreen wgpu backend even without `FILMCRAFT_UI_SNAPSHOT_DIR`.
+A requested GPU run fails if its render state or effect pipeline is unavailable, rather than
+silently testing the CPU path. Snapshot-only runs still use wgpu to draw the UI.

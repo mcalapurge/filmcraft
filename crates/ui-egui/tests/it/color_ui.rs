@@ -27,14 +27,14 @@ impl Driver {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let gpu_requested = std::env::var_os("FILMCRAFT_UI_TEST_GPU").is_some();
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
+        if snapshots.is_some() || gpu_requested {
             b = b.wgpu();
         }
         let harness = b.build_eframe(move |cc| {
-            if std::env::var_os("FILMCRAFT_UI_TEST_GPU").is_some()
-                && let Some(rs) = &cc.wgpu_render_state
-            {
+            if gpu_requested {
+                let rs = cc.wgpu_render_state.as_ref().expect("FILMCRAFT_UI_TEST_GPU requires a wgpu render state");
                 app.set_wgpu(rs.clone());
                 assert!(app.gpu.as_ref().is_some_and(|g| g.compositor.gpu_effects_available()));
             }
