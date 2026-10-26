@@ -99,6 +99,12 @@ and landscape video. `burn::line_fill` measures how much of the line a set of wo
 included for a popped word or a box); the engine uses it to decide how many words a live caption
 holds and to find captions that no longer fit.
 
+Fitting reserves the largest highlighted word, outline and box when wrapping lines (`line_fill`
+uses the same reserve, so a group it passes draws on one line), and the overlay is sized for the
+popped word, so a long word stays whole even at 2× pop. A popped word may reach into the side
+margin; the caption moves, all lines together, only when one would leave the frame, so left- or
+right-aligned lines share one edge.
+
 Text is set in the track's font (**Inter**, `assets/fonts/Inter-*.ttf`, SIL OFL 1.1, attributed in
 `ATTRIBUTION.md`, when none is chosen) in the track's font style (SemiBold by default) by the
 `filmcraft-text` engine: shaped with kerning and ligatures, bidi-ordered, and drawn from its
