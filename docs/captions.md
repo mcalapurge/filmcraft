@@ -63,6 +63,11 @@ captions and a one-frame minimum. Sync-locked caption tracks follow insert and e
 the media tracks (a caption across an insert point is split). `Add Edit to All Tracks` (⇧⌘K)
 also splits captions.
 
+For live captions, trims and overwrites remove words outside the surviving caption and update
+its plain text, including caption sidecars. An insert splits the word list and moves the right
+half with the inserted gap. Changing the sequence timebase snaps caption edges while preserving
+the remaining words' sequence times.
+
 ## Timeline and Text panel
 
 - Caption rows: header with `C1…` badge, lock, output eye, name and format; caption blocks in

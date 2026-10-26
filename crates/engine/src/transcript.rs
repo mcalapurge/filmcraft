@@ -173,7 +173,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         let model = model_p(s, p)?;
         let n = items.len();
         let label = format!("Transcribe ({n} clip{})", if n == 1 { "" } else { "s" });
-        let id = start_host_job(s, host.as_ref(), label, model, items.clone(), opts, then);
+        let id = start_host_job(s, host.as_ref(), label, model, items.clone(), opts, then)?;
         return Ok(json!({"job": id, "items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "model": model.id, "poll": "jobs.list", "cancel": "jobs.cancel"}));
     }
     let t = transcriber(s, p)?;
@@ -211,13 +211,20 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
 fn then_p(p: &Value) -> Result<Vec<(String, Value)>> {
     let Some(list) = p.get("then") else { return Ok(Vec::new()) };
     let list = list.as_array().ok_or_else(|| bad("transcript.generate", "`then` must be a list of {\"command\", \"params\"}"))?;
+    if list.len() > MAX_THEN {
+        return Err(bad("transcript.generate", "`then` accepts at most 16 follow-up commands"));
+    }
     let mut out = Vec::new();
-    for c in list.iter().take(MAX_THEN) {
+    for c in list {
         let id = c["command"].as_str().ok_or_else(|| bad("transcript.generate", "each `then` entry needs a `command`"))?;
         if id == "transcript.generate" {
             return Err(bad("transcript.generate", "`then` can't run transcript.generate"));
         }
-        out.push((id.to_string(), c.get("params").cloned().unwrap_or_else(|| json!({}))));
+        let params = c.get("params").cloned().unwrap_or_else(|| json!({}));
+        if !params.is_object() {
+            return Err(bad("transcript.generate", "follow-up `params` must be an object"));
+        }
+        out.push((id.to_string(), params));
     }
     Ok(out)
 }
@@ -299,6 +306,8 @@ struct AudioRead {
 /// A [`SpeechHost`] job: reading its audio, then running on the host; applied by [`poll`].
 pub struct PendingTranscript {
     pub job: u64,
+    document_epoch: u64,
+    sequence: Option<ItemId>,
     model: &'static filmcraft_speech::models::ModelInfo,
     options: Options,
     /// Clips still being read, in order, then the ones handed to the host.
@@ -334,12 +343,26 @@ fn start_host_job(
     items: Vec<ItemId>,
     options: Options,
     then: Vec<(String, Value)>,
-) -> u64 {
+) -> Result<u64> {
+    if s.transcript_jobs.len() >= 8 {
+        return Err(bad("transcript.generate", "at most 8 speech jobs may be pending; finish or cancel a job first"));
+    }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(1000, Ordering::Relaxed);
     let reads: Vec<AudioRead> = items.iter().map(|&item| AudioRead { item, samples: Vec::new(), len: 0 }).collect();
-    let pj = PendingTranscript { job: id, model, options, reads, skipped: Vec::new(), started: false, transcripts: Arc::default(), then };
+    let pj = PendingTranscript {
+        job: id,
+        document_epoch: s.document_epoch,
+        sequence: s.state.active_sequence,
+        model,
+        options,
+        reads,
+        skipped: Vec::new(),
+        started: false,
+        transcripts: Arc::default(),
+        then,
+    };
     if pj.reads.is_empty() {
         *lock(&job.progress.status) = format!("Downloading {}", model.name);
     } else {
@@ -351,7 +374,7 @@ fn start_host_job(
         // a download needs no audio: hand it over now
         poll_one(s, host, s.transcript_jobs.len() - 1);
     }
-    id
+    Ok(id)
 }
 
 /// Read the audio of a pending job's clips for up to [`READ_BUDGET`]. Returns an error that ends
@@ -374,10 +397,12 @@ fn read_audio(s: &Session, pj: &mut PendingTranscript, progress: &filmcraft_expo
         }
         pj.reads.retain(|r| r.len > 0);
         pj.skipped.extend(skipped);
-        let total: u64 = pj.reads.iter().map(|r| r.len as u64).sum();
+        // The cap is shared by pending jobs: separately admitting two hours per job can
+        // exhaust the UI's wasm memory while the single worker processes its backlog.
+        let total = pj.reads.iter().chain(s.transcript_jobs.iter().flat_map(|job| &job.reads)).fold(0u64, |total, read| total.saturating_add(read.len as u64));
         if total > MAX_HOST_AUDIO_SECONDS * sr as u64 {
             return Err(format!(
-                "{:.1} hours of audio is more than this build transcribes at once ({} hours); transcribe fewer clips at a time",
+                "{:.1} hours of pending audio is more than this build transcribes at once ({} hours); transcribe fewer clips at a time",
                 total as f64 / sr as f64 / 3600.0,
                 MAX_HOST_AUDIO_SECONDS / 3600
             ));
@@ -414,6 +439,14 @@ fn read_audio(s: &Session, pj: &mut PendingTranscript, progress: &filmcraft_expo
 fn poll_one(s: &mut Session, host: &dyn SpeechHost, i: usize) {
     let Some(id) = s.transcript_jobs.get(i).map(|pj| pj.job) else { return };
     let Some(job) = s.jobs.iter().find(|j| j.id == id).cloned() else { return };
+    if s.transcript_jobs.get(i).is_some_and(|pj| pj.document_epoch != s.document_epoch && (!pj.reads.is_empty() || !pj.skipped.is_empty())) {
+        job.progress.cancel.store(true, Ordering::Relaxed);
+        if !job.progress.finished.load(Ordering::Relaxed) {
+            host.cancel(id);
+        }
+        finish(&job.progress, &job.result, Err("the project changed while transcribing; the result was discarded".into()));
+        return;
+    }
     if job.progress.finished.load(Ordering::Relaxed) {
         return;
     }
@@ -470,6 +503,12 @@ pub fn poll(s: &mut Session) {
         let transcripts = lock(&pj.transcripts).take();
         match (outcome, transcripts) {
             (Some(Ok(_)), Some(ts)) if !pj.reads.is_empty() => {
+                if ts.len() != pj.reads.len() || pj.reads.iter().any(|r| media_item(s, r.item) != Some(r.item)) {
+                    let error = "the speech host returned incomplete transcripts or their media was removed; nothing was changed".to_string();
+                    finish(&job.progress, &job.result, Err(error.clone()));
+                    s.error_toast("transcript.generate", error);
+                    continue;
+                }
                 let done: Vec<(ItemId, Transcript)> = pj
                     .reads
                     .iter()
@@ -490,7 +529,11 @@ pub fn poll(s: &mut Session) {
                 match r {
                     Ok(_) => {
                         s.toast(format!("Transcribed {n} clip{} ({words} words)", if n == 1 { "" } else { "s" }));
-                        run_then(s, pj.then);
+                        if !pj.then.is_empty() && s.state.active_sequence != pj.sequence {
+                            s.error_toast("transcript.generate", "The active sequence changed; transcription follow-up commands were skipped");
+                        } else {
+                            run_then(s, pj.then);
+                        }
                     }
                     Err(e) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
                 }
@@ -498,6 +541,11 @@ pub fn poll(s: &mut Session) {
             (Some(Ok(_)), _) if pj.reads.is_empty() && pj.skipped.is_empty() => s.toast(format!("Downloaded {}", pj.model.name)),
             (Some(Err(e)), _) if e == "stopped" => {}
             (Some(Err(e)), _) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
+            (Some(Ok(_)), _) => {
+                let error = "the speech host returned no transcripts; nothing was changed".to_string();
+                finish(&job.progress, &job.result, Err(error.clone()));
+                s.error_toast("transcript.generate", error);
+            }
             _ => {}
         }
     }
@@ -746,7 +794,7 @@ fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
         if host.installed(m.id) {
             return Ok(json!({"model": m.id, "installed": true}));
         }
-        let job = start_host_job(s, host.as_ref(), format!("Download {}", m.name), m, Vec::new(), Options::default(), Vec::new());
+        let job = start_host_job(s, host.as_ref(), format!("Download {}", m.name), m, Vec::new(), Options::default(), Vec::new())?;
         return Ok(json!({"model": m.id, "job": job, "poll": "jobs.list", "cancel": "jobs.cancel"}));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
@@ -768,7 +816,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"then":[{"command":id,"params":object}]? (up to 16 follow-up commands)}"#,
             can_transcribe,
             generate,
             true,

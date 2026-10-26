@@ -313,8 +313,11 @@ impl Caption {
     }
 
     /// Keep the words inside the caption, in order and not overlapping; a word wholly outside it
-    /// is dropped.
+    /// is dropped. Keep the plain text in sync, including when every timed word was removed.
     pub fn clamp_words(&mut self) {
+        if self.words.is_empty() {
+            return;
+        }
         let dur = self.duration.max(Tick::ZERO);
         self.words.retain(|w| w.end > Tick::ZERO && w.start < dur && !w.text.trim().is_empty());
         let mut prev = Tick::ZERO;
@@ -323,6 +326,7 @@ impl Caption {
             w.end = w.end.clamp(w.start, dur);
             prev = w.end;
         }
+        self.text = self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
     }
 
     /// The text of a word-timed caption changed: time the words of the new text. The same number
@@ -451,6 +455,13 @@ impl CaptionTrack {
         for c in &self.captions {
             if !crate::bounded_time_range(c.start, c.duration) {
                 return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
+            }
+            let mut previous_end = Tick::ZERO;
+            for word in &c.words {
+                if word.start < previous_end || word.end < word.start || word.end > c.duration {
+                    return Err(format!("{}: caption {:?} has unordered or out-of-range word timings", self.name, c.id));
+                }
+                previous_end = word.end;
             }
         }
         Ok(())
@@ -645,6 +656,17 @@ mod tests {
         c.shift_words(Tick(i64::MAX));
         assert!(spread_words(&["x".into()], Tick(i64::MAX), Tick(i64::MIN)).iter().all(|w| w.start == w.end));
         assert!(spread_words(&[], Tick(0), Tick(10)).is_empty());
+    }
+
+    #[test]
+    fn caption_tracks_reject_corrupt_word_offsets_without_panicking() {
+        for words in [vec![("x", i64::MIN, 5)], vec![("x", 0, i64::MAX)], vec![("x", 5, 1)], vec![("x", 0, 20), ("y", 10, 30)]] {
+            let mut track = CaptionTrack::new(TrackId(1), "Live".into(), CaptionFormat::Subtitle);
+            track.captions.push(timed("x", 100, &words));
+            let result = std::panic::catch_unwind(|| track.check());
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
     }
 
     #[test]

@@ -164,3 +164,8 @@ canvas output with the independent CPU renderer.
 The timeline uses GPU cost estimates only when its actual compositor has an available effect
 stage and software rendering is off. Those estimates are not measured frame-rate guarantees;
 preview hashes and rendered-preview coverage do not depend on the hardware path.
+
+The theme installs every embedded craft-fonts script as a fallback after its ordered Japanese,
+Chinese and right-to-left faces. Font-picker samples (including Devanagari) therefore draw safely
+in every UI family and theme. Builds without craft-fonts retain their bundled/system fallback
+behavior; no new font files are stored in this repository.

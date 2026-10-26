@@ -292,10 +292,14 @@ fn vertical_workspace_keeps_portrait_preview_beside_the_timeline() {
     }
     assert!(d.workspaces_menu().iter().any(|(name, checked)| name == "Vertical" && *checked));
     let layout = d.app().ui.dock.clone();
-    let filmcraft_ui_egui::dock::DockNode::Split { vertical: false, a, b, .. } = &layout else { panic!("preview must be beside the editing area") };
-    assert!(b.is_visible(PanelKind::Program));
-    assert!(!a.contains(PanelKind::Program));
-    assert!(a.contains(PanelKind::Timeline));
+    let Some(craft_ui::docking::Node::Split { axis: craft_ui::layout::SplitAxis::Horizontal, first, second, .. }) = &layout.root else {
+        panic!("preview must be beside the editing area")
+    };
+    let first = craft_ui::docking::Layout { root: Some((**first).clone()), ..Default::default() };
+    let second = craft_ui::docking::Layout { root: Some((**second).clone()), ..Default::default() };
+    assert_eq!(second.panel_state(&PanelKind::Program), craft_ui::docking::PanelState::Front);
+    assert!(!first.contains(&PanelKind::Program));
+    assert!(first.contains(&PanelKind::Timeline));
     d.snapshot("vertical");
     d.menu("window.workspace.saveChanges", json!({}));
     d.menu("window.workspace.editing", json!({}));

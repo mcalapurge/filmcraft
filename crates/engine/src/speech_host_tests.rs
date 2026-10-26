@@ -160,7 +160,13 @@ fn then_also_runs_when_transcribing_in_the_command() {
 #[test]
 fn hostile_then_is_refused() {
     let (mut s, _, item) = session();
-    for then in [json!(3), json!([{"params": {}}]), json!([{"command": "transcript.generate"}])] {
+    for then in [
+        json!(3),
+        json!([{"params": {}}]),
+        json!([{"command": "transcript.generate"}]),
+        json!([{"command": "captions.createLive", "params": 42}]),
+        json!(vec![json!({"command": "captions.createLive"}); 17]),
+    ] {
         assert!(s.execute("transcript.generate", json!({"items": [item.0], "then": then})).is_err(), "{then}");
     }
     assert!(s.transcript_jobs.is_empty(), "no job for a refused command");
@@ -256,4 +262,74 @@ fn a_failed_host_job_reports_its_error() {
     s.poll_persistence();
     assert!(s.project.transcripts.is_empty());
     assert!(toasts(&mut s).iter().any(|(m, e)| m.contains("404") && *e));
+}
+
+#[test]
+fn finished_transcription_cannot_edit_a_replaced_document_with_reused_ids() {
+    let (mut s, host, item) = session();
+    let id = s.execute("transcript.generate", json!({"items": [item.0]})).unwrap()["job"].as_u64().unwrap();
+    poll_until_started(&mut s, &host, id);
+    host.complete(id);
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    s.poll_persistence();
+    assert!(Arc::ptr_eq(&s.project, &before), "a job belongs to the document that started it");
+    assert_eq!(s.history.undo.len(), undo);
+    assert!(s.transcript_jobs.is_empty());
+}
+
+#[test]
+fn transcription_followups_cannot_edit_a_different_active_sequence() {
+    let (mut s, host, item) = session();
+    let original = s.state.active_sequence.unwrap();
+    let id = s
+        .execute(
+            "transcript.generate",
+            json!({"items": [item.0], "then": [
+                {"command": "captions.createLive", "params": {"source": "transcript"}}
+            ]}),
+        )
+        .unwrap()["job"]
+        .as_u64()
+        .unwrap();
+    poll_until_started(&mut s, &host, id);
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    let other = s.state.active_sequence.unwrap();
+    s.execute("timeline.place", json!({"item": item.0, "time": 0})).unwrap();
+    host.complete(id);
+    s.poll_persistence();
+    assert_eq!(s.state.active_sequence, Some(other));
+    assert!(s.project.transcripts.contains_key(&item), "the transcript still belongs to its media");
+    assert!(s.project.sequence(other).unwrap().caption_tracks.is_empty(), "followups must not edit another timeline");
+    assert!(s.project.sequence(original).unwrap().caption_tracks.is_empty());
+    assert!(toasts(&mut s).iter().any(|(m, _)| m.contains("follow-up") && m.contains("sequence")));
+}
+
+#[test]
+fn a_host_must_return_exactly_one_transcript_per_requested_clip() {
+    let (mut s, host, item) = session();
+    let id = s.execute("transcript.generate", json!({"items": [item.0]})).unwrap()["job"].as_u64().unwrap();
+    poll_until_started(&mut s, &host, id);
+    host.complete(id);
+    *host.jobs.lock().unwrap()[0].transcripts.lock().unwrap() = Some(Vec::new());
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    s.poll_persistence();
+    assert!(Arc::ptr_eq(&s.project, &before));
+    assert_eq!(s.history.undo.len(), undo);
+    let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+    assert!(job.result.lock().unwrap().as_ref().unwrap().is_err());
+    assert!(toasts(&mut s).iter().any(|(m, e)| m.contains("transcript") && *e));
+}
+
+#[test]
+fn pending_speech_jobs_are_bounded() {
+    let (mut s, _, _) = session();
+    for _ in 0..8 {
+        s.execute("transcript.downloadModel", json!({"model": "whisper-tiny"})).unwrap();
+    }
+    let jobs = s.jobs.len();
+    assert!(s.execute("transcript.downloadModel", json!({"model": "whisper-tiny"})).is_err());
+    assert_eq!(s.jobs.len(), jobs, "a rejected request must not allocate another job");
 }

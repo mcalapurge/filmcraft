@@ -101,3 +101,7 @@ removes silence but not a pause the boundary has already crossed).
 - Transcription runs synchronously inside the command (no background job or progress bar yet).
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.
+
+Malformed transcripts with extremely sparse speaker indices are normalized by compacting missing
+indices while preserving each speaker identity and its generated display name. Label allocation
+follows the actual word list rather than the largest numeric index.

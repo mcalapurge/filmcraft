@@ -182,11 +182,13 @@ fn caption_px(style: &CaptionStyle, w: usize, h: usize) -> f32 {
 }
 
 /// The gap between the words of a word-timed caption: a space, plus room for a highlight box.
-fn word_gap(style: &CaptionStyle, ts: &TextStyle) -> f32 {
+fn word_gap(style: &CaptionStyle, ts: &TextStyle, widest: f32) -> f32 {
     let space = filmcraft_text::measure("a a", ts) - filmcraft_text::measure("aa", ts);
     // a highlight box reaches past its word; keep it off the neighbours (the same for every
     // word, so the line does not shift as the box moves)
-    if style.highlight == WordHighlight::Box { space + (ts.size * 0.3).round() * 0.6 } else { space }
+    let box_pad = if style.highlight == WordHighlight::Box { (ts.size * 0.3).round() * 0.6 } else { 0.0 };
+    let pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(1.0, 2.0) };
+    space + box_pad + widest * (pop - 1.0) / 2.0
 }
 
 /// How wide `words` draw on one line as a word-timed caption in a `w`×`h` frame, as a fraction of
@@ -202,7 +204,7 @@ pub fn line_fill(style: &CaptionStyle, w: usize, h: usize, words: &[&str]) -> f3
     let widths: Vec<f32> = words.iter().map(|wd| filmcraft_text::measure(&caps(wd.trim()), &ts)).collect();
     let widest = widths.iter().copied().fold(0.0, f32::max);
     let pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) };
-    let total = widths.iter().sum::<f32>() + word_gap(style, &ts) * (widths.len() - 1) as f32 + widest * (pop - 1.0).max(0.0);
+    let total = widths.iter().sum::<f32>() + word_gap(style, &ts, widest) * (widths.len() - 1) as f32 + widest * (pop - 1.0).max(0.0);
     total / (w as f32 * 0.9)
 }
 
@@ -225,20 +227,33 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
     let timed = !c.words.is_empty();
     let active = if timed { offset.and_then(|o| c.word_at(o)) } else { None };
     let words: Vec<String> = c.words.iter().map(|wd| caps(wd.text.trim())).collect();
+    // Keep layout independent of the active word, including the space its largest pop or
+    // highlight box can occupy. A long word must fit when highlighted as well as at rest.
+    let fit_pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(1.0, 2.0) };
+    let outline = (finite(style.outline, 0.0) * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
     let mut px = caption_px(style, w, h);
     if timed {
         // a word too wide for the frame shrinks the caption until it fits, instead of being cut
         // off at the frame edge (an ordinary subtitle keeps its size and wraps)
         let probe = caption_style(&style.font, &style.font_style, px);
         let widest = words.iter().map(|wd| filmcraft_text::measure(wd, &probe)).fold(0.0, f32::max);
-        if widest > max_w {
-            px = (px * max_w / widest).max(4.0);
+        let box_pad = if style.highlight == WordHighlight::Box { px * 0.6 } else { 0.0 };
+        let required = widest * fit_pop + box_pad;
+        let available = (max_w - 2.0 * outline).max(4.0);
+        if required > available {
+            px = (px * available / required).max(4.0);
         }
     }
     let ts = caption_style(&style.font, &style.font_style, px);
+    let widest = words.iter().map(|wd| filmcraft_text::measure(wd, &ts)).fold(0.0, f32::max);
     // (text, word index, width) per line
     let rows: Vec<Vec<(String, Option<usize>, f32)>> = if timed {
-        wrap_words(&words, &ts, word_gap(style, &ts), max_w).into_iter().map(|l| l.into_iter().map(|(t, i, lw)| (t, Some(i), lw)).collect()).collect()
+        let box_pad = if style.highlight == WordHighlight::Box { px * 0.6 } else { 0.0 };
+        let wrap_width = (max_w - widest * (fit_pop - 1.0) - box_pad - 2.0 * outline).max(4.0);
+        wrap_words(&words, &ts, word_gap(style, &ts, widest), wrap_width)
+            .into_iter()
+            .map(|l| l.into_iter().map(|(t, i, lw)| (t, Some(i), lw)).collect())
+            .collect()
     } else {
         let mut lines: Vec<String> = Vec::new();
         // (speaker names are metadata; like Premiere, they are not burned in)
@@ -267,7 +282,7 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
     .max(0.0)
     .round();
     let side = w as f32 * 0.05;
-    let space = if timed { word_gap(style, &ts) } else { 0.0 };
+    let space = if timed { word_gap(style, &ts, widest) } else { 0.0 };
     let mut widths: Vec<f32> = Vec::with_capacity(rows.len());
     let mut lines: Vec<Vec<Token>> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -282,12 +297,20 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
             toks.push(Token { text, word, x, w: tw });
             x += tw + space;
         }
+        if timed {
+            let extra = |tok: &Token| tok.w * (fit_pop - 1.0) / 2.0 + outline + if style.highlight == WordHighlight::Box { pad_x * 0.6 } else { 0.0 };
+            let lo = toks.iter().map(|tok| tok.x - extra(tok)).fold(f32::MAX, f32::min);
+            let hi = toks.iter().map(|tok| tok.x + tok.w + extra(tok)).fold(f32::MIN, f32::max);
+            let shift = (side - lo).max(0.0) - (hi - (w as f32 - side)).max(0.0);
+            for tok in &mut toks {
+                tok.x += shift;
+            }
+        }
         widths.push(lw);
         lines.push(toks);
     }
     let xs: Vec<f32> = lines.iter().map(|l| l.first().map(|t| t.x).unwrap_or(0.0)).collect();
     let pop = if active.is_some() && style.highlight != WordHighlight::Off { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) } else { 1.0 };
-    let outline = (finite(style.outline, 0.0) * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
     let grow = outline.ceil() + 1.0 + (px * (pop - 1.0).max(0.0)).ceil() + if style.highlight == WordHighlight::Box { pad_x } else { 0.0 };
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
@@ -676,6 +699,49 @@ mod tests {
         // a hostile run of one character never panics and stays in the frame
         let o = render_caption_at(&live_text(&"W".repeat(5000)), &st, 1080, 1920, Some(Tick(0))).unwrap();
         assert!(o.x >= 0 && o.x as usize + o.w <= 1080);
+    }
+
+    #[test]
+    fn a_long_word_keeps_its_entire_pop_and_box_inside_the_frame() {
+        let c = live_text("Pneumonoultramicroscopicsilicovolcanoconiosis");
+        for name in ["Pop", "Box"] {
+            let mut style = CaptionStyle::preset(name).unwrap();
+            style.highlight_scale = 2.0;
+            for align in [CaptionAlign::Left, CaptionAlign::Center, CaptionAlign::Right] {
+                style.align = align;
+                let overlay = render_caption_at(&c, &style, 1080, 1920, Some(Tick::ZERO)).unwrap();
+                let (lo, hi) = ink_span(&overlay);
+                assert!(lo > 0 && hi < 1079, "{name} {align:?}: highlighted word is clipped at {lo}..{hi}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_popped_word_keeps_a_visible_gap_before_its_neighbour() {
+        let c = live_text("ORIGINAL CAPTIONS");
+        let style = CaptionStyle {
+            color: [0, 0, 255, 255],
+            highlight_color: [255, 0, 0, 255],
+            highlight: WordHighlight::Color,
+            highlight_scale: 1.5,
+            outline: 0.0,
+            short_side: true,
+            background: false,
+            ..Default::default()
+        };
+        let overlay = render_caption_at(&c, &style, 1080, 1920, Some(Tick::ZERO)).unwrap();
+        let mut red_end = i32::MIN;
+        let mut blue_start = i32::MAX;
+        for (i, pixel) in overlay.px.as_chunks::<4>().0.iter().enumerate() {
+            let x = overlay.x + (i % overlay.w) as i32;
+            if pixel[0] > 0.5 {
+                red_end = red_end.max(x);
+            }
+            if pixel[2] > 0.5 {
+                blue_start = blue_start.min(x);
+            }
+        }
+        assert!(blue_start > red_end + 2, "popping must not merge neighbouring words: {red_end}..{blue_start}");
     }
 
     #[test]

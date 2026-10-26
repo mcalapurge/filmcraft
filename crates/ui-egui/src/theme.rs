@@ -432,6 +432,7 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     crate::rtl::install(&mut fonts);
+    add_remaining_craft_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
 }
@@ -439,6 +440,22 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
 /// Name of the egui font for a craft-fonts entry.
 fn craft_font_name(f: &filmcraft_text::fonts::CraftFont) -> String {
     format!("craft:{} {}", f.family, f.style)
+}
+
+/// Font pickers show samples of every embedded script. Keep the explicitly ordered Japanese,
+/// Chinese and RTL stacks first, then cover the remaining craft-fonts scripts (Devanagari,
+/// Thai, Georgian, symbols). Otherwise opening a picker can panic on a sample's missing glyph.
+fn add_remaining_craft_fonts(fonts: &mut FontDefinitions) {
+    for face in filmcraft_text::fonts::CRAFT_FONTS {
+        let name = craft_font_name(face);
+        if fonts.font_data.contains_key(&name) {
+            continue;
+        }
+        fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(face.bytes)));
+        for stack in fonts.families.values_mut() {
+            stack.push(name.clone());
+        }
+    }
 }
 
 /// Append the Japanese craft-fonts (empty unless built with `CRAFT_FONTS_DIR`) as the last fallbacks
@@ -703,7 +720,7 @@ mod tests {
     #[test]
     fn works_without_craft_fonts() {
         let ctx = installed();
-        let n = filmcraft_text::fonts::craft_japanese().count() + crate::cjk::craft_fonts().count() + crate::rtl::craft_fonts().count();
+        let n = filmcraft_text::fonts::CRAFT_FONTS.len();
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             assert_eq!(defs.font_data.keys().filter(|k| k.starts_with("craft:")).count(), n);
@@ -714,5 +731,28 @@ mod tests {
                 assert!(defs.families.values().flatten().all(|name| !name.starts_with("craft:")));
             }
         });
+    }
+
+    #[test]
+    fn devanagari_font_picker_sample_renders_in_every_theme_and_family() {
+        if !filmcraft_text::fonts::CRAFT_FONTS.iter().any(|face| face.scripts.contains(&"Deva")) {
+            return;
+        }
+        for theme in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let result = std::panic::catch_unwind(|| {
+                let ctx = egui::Context::default();
+                install(&ctx, &Tokens::for_kind(theme));
+                ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+                ctx.fonts_mut(|fonts| {
+                    for family in font_families() {
+                        let font = FontId::new(13.0, family);
+                        assert!(fonts.has_glyph(&font, 'इ'));
+                        let text = fonts.layout_no_wrap("इ".into(), font, Color32::WHITE);
+                        assert!(text.size().x > 0.0);
+                    }
+                });
+            });
+            assert!(result.is_ok(), "the font-picker sample must not panic in {theme:?}");
+        }
     }
 }

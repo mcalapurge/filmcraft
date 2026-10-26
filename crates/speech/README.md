@@ -10,8 +10,9 @@ model handling: [docs/transcripts.md](../../docs/transcripts.md).
 - `whisper` (feature `whisper`): Whisper inference on candle (CPU, pure Rust).
 - `mel`, `vad`, `diarize`: log-mel front end, word-bound tightening, MFCC-clustering speaker labels.
 
-Both features are off by default and are never enabled for wasm (`cargo xtask wasm` checks the
-crate without them).
+Both features are off by default. The web app enables `whisper` for its Web Worker;
+`download` stays native-only because the browser streams verified model files into OPFS.
+`cargo xtask wasm` checks the standalone crate and the web app that enables inference.
 
 Word alignment follows the published procedure: the decoder row of each input token attends to
 the audio of the token it predicts, so a token's time is read from the row before it (the final
