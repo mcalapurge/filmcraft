@@ -403,3 +403,53 @@ fn selective_colour_bands_controls_reset_and_eyedropper() {
     d.exec("edit.redo", json!({}));
     d.snapshot("color-selective-colour", None);
 }
+
+#[test]
+fn lumetri_panel_edits_every_selected_clip() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let (a, b) = (seq["video"][0]["items"][0]["clip"].as_u64().unwrap(), seq["video"][0]["items"][1]["clip"].as_u64().unwrap());
+    // `b` has a blur before its Lumetri, `a` no Lumetri yet
+    d.exec("effects.apply", json!({"clips": [b], "effect": "gaussian_blur"}));
+    d.exec("effects.apply", json!({"clips": [b], "effect": "lumetri"}));
+    d.exec("timeline.select", json!({"clips": [a, b]}));
+    d.frames(3);
+    d.click("lumetri.add");
+    let count = |d: &mut Driver, c: u64| {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let it = seq["video"][0]["items"].as_array().unwrap().iter().find(|i| i["clip"] == c).unwrap().clone();
+        it["effects"].as_array().unwrap().iter().filter(|e| e["effect"] == "lumetri").count()
+    };
+    assert_eq!((count(&mut d, a), count(&mut d, b)), (1, 1), "Lumetri added where missing, not twice");
+    assert!(!d.ids("lumetri.selectionCount").is_empty());
+
+    d.click("lumetri.section.Basic Correction");
+    d.click("lumetri.section.Selective Colour");
+    d.click("lumetri.selective.band.green");
+    let undo = d.app().session.history.undo.len();
+    d.click("lumetri.param.selective_green_hue");
+    let hue = |d: &mut Driver, c: u64| lumetri(d, c)["params"]["selective_green_hue"]["value"].clone();
+    let edited = hue(&mut d, a);
+    assert_ne!(edited, json!("Float(0.0)"));
+    assert_eq!(hue(&mut d, b), edited, "the selective colour edit reaches every selected clip");
+    assert_eq!(d.app().session.history.undo.len(), undo + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!((hue(&mut d, a), hue(&mut d, b)), (json!("Float(0.0)"), json!("Float(0.0)")));
+    d.exec("edit.redo", json!({}));
+
+    d.click("lumetri.selective.reset");
+    assert_eq!((hue(&mut d, a), hue(&mut d, b)), (json!("Float(0.0)"), json!("Float(0.0)")));
+    d.click("lumetri.selective.eyedropper");
+    assert_eq!(d.app().ui.eyedropper.as_ref().unwrap().lumetri_clips, vec![a, b]);
+    d.click("lumetri.selective.eyedropper");
+    d.click("lumetri.switch.Selective Colour");
+    for c in [a, b] {
+        assert_eq!(lumetri(&mut d, c)["params"]["selective_on"]["value"], json!("Bool(false)"), "clip {c}");
+    }
+    d.click("lumetri.fx");
+    for c in [a, b] {
+        assert_eq!(lumetri(&mut d, c)["enabled"], json!(false), "clip {c}");
+    }
+}

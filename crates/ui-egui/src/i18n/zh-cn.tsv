@@ -889,6 +889,8 @@
 	(no clip selected)	（未选择剪辑）
 	Master · {name}	主 · {name}
 	Add Lumetri Color to clip	向剪辑添加 Lumetri 颜色
+	Add Lumetri Color to {n} clips	向 {n} 个剪辑添加 Lumetri 颜色
+	Edits apply to all {n} selected clips.	编辑将应用于所选的全部 {n} 个剪辑。
 	Input LUT	输入 LUT
 	Color	颜色
 	Temperature	色温

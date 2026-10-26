@@ -3241,75 +3241,7 @@ fn build() -> Vec<CommandSpec> {
                 }
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                    let mt = it.source_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
-                    let e = match &eff {
-                        Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
-                        Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
-                        _ => None,
-                    }
-                    .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
-                    // the parameter's definition (a mask's own parameters have none)
-                    let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
-                    // a choice takes its option name as well as its index, as transition parameters do
-                    let val = match (def.map(|d| &d.kind), &val) {
-                        (Some(filmcraft_project::ParamKind::Choice(opts)), Value::String(name)) => {
-                            let i = opts
-                                .iter()
-                                .position(|o| o.eq_ignore_ascii_case(name))
-                                .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
-                            json!(i)
-                        }
-                        _ => val.clone(),
-                    };
-                    if keyframe && def.is_some_and(|d| !d.animatable) {
-                        return Err(bad("effects.setParam", format!("`{pid}` cannot be animated")));
-                    }
-                    if eff == json!("opacity") || eff == json!("motion") {
-                        e.enabled = true;
-                    }
-                    // instances saved before a parameter existed get it from the definition
-                    if !e.params.contains_key(&pid)
-                        && let Some(d) = e.def().and_then(|d| d.param(&pid))
-                    {
-                        e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
-                    }
-                    let (keyframes, v) = {
-                        let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
-                        let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
-                        // the parameter's hard range, which `effects.list` publishes: a value outside it
-                        // (a factor where a percentage is meant, #2679) is refused, not saved
-                        if let (Some(filmcraft_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) = (def.map(|d| &d.kind), &v)
-                            && !(*min..=*max).contains(x)
-                        {
-                            return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
-                        }
-                        let keyframes = if keyframe {
-                            // the stopwatch and the value in one step
-                            prm.put_keyframe(mt, v.clone());
-                            prm.keyframes.len()
-                        } else {
-                            prm.set_at(mt, v.clone());
-                            prm.keyframes.len()
-                        };
-                        (keyframes, v)
-                    };
-                    let accepted_value = param_value_to_json(&v);
-
-                    if e.effect == "ultra_key"
-                        && pid == "setting"
-                        && let ParamValue::Choice(setting) = v
-                        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
-                    {
-                        for (id, value) in rows {
-                            if let Some(p) = e.param_mut(id) {
-                                p.value = ParamValue::Float(*value);
-                                p.keyframes.clear();
-                            } else {
-                                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
-                            }
-                        }
-                    }
-                    Ok((keyframes, accepted_value))
+                    set_item_param(it, &eff, &pid, &val, keyframe, at, ph, &pq)
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes, "param": pid, "value": value}))
@@ -3843,6 +3775,89 @@ fn set_work_area_point(s: &mut Session, p: &Value, is_in: bool) -> Result<Value>
 }
 
 /// Decodes caller JSON using the stored parameter as a type template.
+/// `effects.setParam` on one track item: `pid` of the effect `eff` (an index or an effect id) takes
+/// `val`, as a keyframe at `at` (default: the playhead `ph`, pinned to the item) when animated.
+/// Returns the keyframe count (0: the value is static) and the accepted value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_item_param(
+    it: &mut filmcraft_project::TrackItem,
+    eff: &Value,
+    pid: &str,
+    val: &Value,
+    keyframe: bool,
+    at: Option<Tick>,
+    ph: Tick,
+    pq: &Value,
+) -> Result<(usize, Value)> {
+    let mt = it.source_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+    let e = match eff {
+        Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+        Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+        _ => None,
+    }
+    .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
+    // the parameter's definition (a mask's own parameters have none)
+    let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(pid)) } else { None };
+    // a choice takes its option name as well as its index, as transition parameters do
+    let val = match (def.map(|d| &d.kind), val) {
+        (Some(filmcraft_project::ParamKind::Choice(opts)), Value::String(name)) => {
+            let i =
+                opts.iter().position(|o| o.eq_ignore_ascii_case(name)).ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
+            json!(i)
+        }
+        _ => val.clone(),
+    };
+    if keyframe && def.is_some_and(|d| !d.animatable) {
+        return Err(bad("effects.setParam", format!("`{pid}` cannot be animated")));
+    }
+    if *eff == json!("opacity") || *eff == json!("motion") {
+        e.enabled = true;
+    }
+    // instances saved before a parameter existed get it from the definition
+    if !e.params.contains_key(pid)
+        && let Some(d) = e.def().and_then(|d| d.param(pid))
+    {
+        e.params.insert(pid.to_string(), filmcraft_project::Param::new(d.default.clone()));
+    }
+    let (keyframes, v) = {
+        let prm = crate::masks::target_param(e, pq, pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+        let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
+        // the parameter's hard range, which `effects.list` publishes: a value outside it
+        // (a factor where a percentage is meant, #2679) is refused, not saved
+        if let (Some(filmcraft_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) = (def.map(|d| &d.kind), &v)
+            && !(*min..=*max).contains(x)
+        {
+            return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
+        }
+        let keyframes = if keyframe {
+            // the stopwatch and the value in one step
+            prm.put_keyframe(mt, v.clone());
+            prm.keyframes.len()
+        } else {
+            prm.set_at(mt, v.clone());
+            prm.keyframes.len()
+        };
+        (keyframes, v)
+    };
+    let accepted_value = param_value_to_json(&v);
+
+    if e.effect == "ultra_key"
+        && pid == "setting"
+        && let ParamValue::Choice(setting) = v
+        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
+    {
+        for (id, value) in rows {
+            if let Some(p) = e.param_mut(id) {
+                p.value = ParamValue::Float(*value);
+                p.keyframes.clear();
+            } else {
+                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
+            }
+        }
+    }
+    Ok((keyframes, accepted_value))
+}
+
 pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamValue> {
     Some(match template {
         ParamValue::Float(_) => ParamValue::Float(v.as_f64()?),

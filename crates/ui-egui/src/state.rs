@@ -414,6 +414,9 @@ pub struct Eyedropper {
     pub effect: usize,
     pub param: String,
     pub mask: Option<usize>,
+    /// Armed in the Lumetri panel: every clip it edits, which all take the colour
+    /// (`lumetri.setParam`). Empty: just `clip`'s effect.
+    pub lumetri_clips: Vec<u64>,
 }
 
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an

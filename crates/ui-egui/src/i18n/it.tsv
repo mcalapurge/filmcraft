@@ -888,6 +888,8 @@
 	(no clip selected)	(nessuna clip selezionata)
 	Master · {name}	Master · {name}
 	Add Lumetri Color to clip	Aggiungi Colore Lumetri alla clip
+	Add Lumetri Color to {n} clips	Aggiungi Colore Lumetri a {n} clip
+	Edits apply to all {n} selected clips.	Le modifiche si applicano a tutte le {n} clip selezionate.
 	Input LUT	LUT di ingresso
 	Color	Colore
 	Temperature	Temperatura

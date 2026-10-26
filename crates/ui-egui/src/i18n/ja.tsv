@@ -895,6 +895,8 @@
 	(no clip selected)	(クリップが選択されていません)
 	Master · {name}	マスター · {name}
 	Add Lumetri Color to clip	クリップに Lumetri カラーを追加
+	Add Lumetri Color to {n} clips	{n} 個のクリップに Lumetri カラーを追加
+	Edits apply to all {n} selected clips.	選択した {n} 個のクリップすべてに適用されます。
 	Input LUT	入力 LUT
 	Color	カラー
 	Temperature	色温度

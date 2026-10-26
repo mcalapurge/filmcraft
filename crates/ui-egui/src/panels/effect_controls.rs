@@ -666,7 +666,7 @@ pub(crate) fn param_row(
                 set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
-            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
+            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, lumetri_clips: Vec::new() };
             let armed = app.ui.eyedropper.as_ref() == Some(&target);
             let drop = icons::button(&mut vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
             app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
@@ -1096,7 +1096,7 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
-        if cmd == "effects.setParam" && down {
+        if (cmd == "effects.setParam" || cmd == "lumetri.setParam") && down {
             if p.get("merge").is_none() {
                 p["merge"] = json!(true);
             }

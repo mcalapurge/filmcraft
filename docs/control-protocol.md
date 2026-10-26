@@ -173,12 +173,21 @@ the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the cl
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
-{clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
-`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without
+{clip?, clips?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, clips?, section, on?}`,
+`lumetri.setParam {clip?, clips?, param, value, keyframe?, time?, merge?, begin?}`,
+`lumetri.setEnabled {clip?, clips?, on?}`,
+`lumetri.applyMatch {clip?, clips?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`.
+Lumetri commands edit `clip`, or `clips`, else every selected video clip, in one undo step,
+adding Lumetri Color where a clip has none; the result's `clips` lists them and `clip` is the
+first (the clip the Lumetri panel shows). A toggle (`setSection`, `setEnabled` without `on`)
+follows that first clip and leaves every target the same. `applyMatch` matches each target to
+the reference frame on its own and skips (`skipped`) a target the reference frame lies in. The
+Lumetri panel edits the whole selection the same way. Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,
-`lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
+`lumetri.match.*`, `lumetri.fx`, `lumetri.add`, `lumetri.selectionCount` (shown when several
+clips are selected); HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
@@ -234,5 +243,8 @@ UI ids: `lumetri.section.Selective Colour`, `lumetri.selective.band.<band>`,
 `lumetri.selective.eyedropper`, `.target`, `.reset`, and
 `lumetri.param.selective_<band>_<field>`.
 
-`lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
-keyframes in a single undo step. Unknown or missing band names return an error.
+`lumetri.resetSelectiveBand {clip?, clips?, band}` restores one band’s defaults and clears its
+keyframes in a single undo step. Unknown or missing band names return an error. With several
+clips selected, every Selective Colour change (a band's controls, Reset, the eyedropper's
+colour, the section switch) applies to all of them as one undo step; `lumetri.setParam` does
+the same for agents.

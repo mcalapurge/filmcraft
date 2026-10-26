@@ -103,6 +103,8 @@
 	Add Guide…	안내선 추가…
 	Add keyframe	키프레임 추가
 	Add Lumetri Color to clip	클립에 Lumetri Color 추가
+	Add Lumetri Color to {n} clips	클립 {n}개에 Lumetri 색상 추가
+	Edits apply to all {n} selected clips.	선택한 클립 {n}개 모두에 적용됩니다.
 	Add Marker	마커 추가
 	Add Marker (M)	마커 추가(M)
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일을 놓거나 아래에서 소스를 선택하세요.
