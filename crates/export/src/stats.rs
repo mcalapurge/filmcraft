@@ -63,13 +63,38 @@ pub enum Stage {
     /// Time the encoding side waited, after encoding a batch, for the next batch to finish rendering
     /// (only with overlap: large means the export is render-bound, near zero encode-bound).
     Wait,
+    // The parts of [`Stage::Render`], summed over the rendering threads (so they exceed its wall
+    // time on a multi-core machine; compare them with each other):
+    /// Frames rendered by the registered GPU renderer: planning (source decoding and CPU-rendered
+    /// layers included), drawing and reading back. The app's `perf.stats` splits it
+    /// (`export.gpuRenderer`).
+    GpuRender,
+    /// Frames rendered whole on the CPU (a CPU fallback, or GPU rendering off).
+    CpuRender,
+    /// Placement, overlays, video limiter and the RGBA8 / HDR conversion of each rendered frame.
+    Post,
+    /// Waiting for a free GPU renderer of the export's pool.
+    RendererWait,
 }
 
-const STAGES: usize = 9;
+const STAGES: usize = 13;
 
 impl Stage {
-    pub const ALL: [Stage; STAGES] =
-        [Stage::Setup, Stage::Loudness, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish, Stage::Wait];
+    pub const ALL: [Stage; STAGES] = [
+        Stage::Setup,
+        Stage::Loudness,
+        Stage::Render,
+        Stage::Encode,
+        Stage::Convert,
+        Stage::Audio,
+        Stage::Mux,
+        Stage::Finish,
+        Stage::Wait,
+        Stage::GpuRender,
+        Stage::CpuRender,
+        Stage::Post,
+        Stage::RendererWait,
+    ];
 
     /// The name in `perf.stats`.
     pub fn name(self) -> &'static str {
@@ -83,6 +108,10 @@ impl Stage {
             Stage::Mux => "mux",
             Stage::Finish => "finish",
             Stage::Wait => "wait",
+            Stage::GpuRender => "gpuRender",
+            Stage::CpuRender => "cpuRender",
+            Stage::Post => "post",
+            Stage::RendererWait => "rendererWait",
         }
     }
 }
@@ -129,6 +158,7 @@ pub fn note_gpu_fallback() {
 
 /// Time an export worker waited for a free GPU renderer (process-wide, for the bench).
 pub(crate) fn note_lock_wait(d: std::time::Duration) {
+    note_stage(Stage::RendererWait, d);
     LOCK_WAIT_NS.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
 }
 

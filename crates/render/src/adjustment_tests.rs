@@ -398,3 +398,69 @@ fn lumetri_hdr_and_adjustment_are_planned_as_gpu_effects() {
         assert!(worst < 0.005, "{working:?}: {worst}");
     }
 }
+
+// CPU-fallback reasons (`perf.stats` `render.cpuFallbacks`): planning a frame records why work
+// left the GPU path. The counters are process-wide, so each check reads its own key's growth.
+
+fn fallbacks(scope: crate::fallback::Scope, why: crate::fallback::Fallback) -> u64 {
+    crate::fallback::counts().into_iter().find(|(s, f, _)| *s == scope && *f == why).map_or(0, |(_, _, n)| n)
+}
+
+fn plan_at(s: &Scene, frame: i64) -> crate::plan::FramePlan {
+    crate::plan::plan_frame(&s.p, s.seq, R.tick_of(frame), RenderOptions::default(), &s.map)
+}
+
+#[test]
+fn fallback_reasons_name_the_effect_or_mask_of_a_cpu_layer() {
+    use crate::fallback::{Fallback, Scope};
+    let mut s = scene(1);
+    let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    let c = place(&mut s.p, s.seq, 0, red);
+    // a clip with only GPU effects records nothing
+    fx(&mut s, c, "invert");
+    let before = fallbacks(Scope::Layer, Fallback::Effect("invert"));
+    plan_at(&s, 12);
+    assert_eq!(fallbacks(Scope::Layer, Fallback::Effect("invert")), before);
+    // an effect without a GPU implementation is named by its id
+    fx(&mut s, c, "find_edges");
+    let before = fallbacks(Scope::Layer, Fallback::Effect("find_edges"));
+    plan_at(&s, 12);
+    assert_eq!(fallbacks(Scope::Layer, Fallback::Effect("find_edges")), before + 1);
+    // an opacity mask on a clip whose effects all run on the GPU
+    clip(&mut s, c).effects.retain(|e| e.effect != "find_edges");
+    let op = clip(&mut s, c).effect_mut("opacity").unwrap();
+    op.masks.push(Mask::new("o", MaskPath::rect(0.0, 0.0, 160.0, 180.0)));
+    let before = fallbacks(Scope::Layer, Fallback::OpacityMask);
+    plan_at(&s, 12);
+    assert_eq!(fallbacks(Scope::Layer, Fallback::OpacityMask), before + 1);
+}
+
+#[test]
+fn fallback_reasons_name_what_sends_a_whole_frame_to_the_cpu() {
+    use crate::fallback::{Fallback, Scope};
+    let mut s = scene(2);
+    let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    place(&mut s.p, s.seq, 0, red);
+    let adj = adjustment(&mut s.p, s.seq, 1);
+    fx(&mut s, adj, "invert");
+    let before = fallbacks(Scope::Frame, Fallback::AdjustmentLayer);
+    assert!(!matches!(plan_at(&s, 12), crate::plan::FramePlan::Image(_)), "a plain adjustment layer plans on the GPU");
+    clip(&mut s, adj).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    assert_eq!(crate::plan::cpu_frame_cause(&s.p, s.seq, R.tick_of(12)), Some(Fallback::AdjustmentLayer));
+    assert!(matches!(plan_at(&s, 12), crate::plan::FramePlan::Image(_)));
+    assert_eq!(fallbacks(Scope::Frame, Fallback::AdjustmentLayer), before + 1);
+    // an effect the GPU lacks on an otherwise plain adjustment layer is named by its id
+    clip(&mut s, adj).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(100.0);
+    fx(&mut s, adj, "emboss");
+    assert_eq!(crate::plan::cpu_frame_cause(&s.p, s.seq, R.tick_of(12)), Some(Fallback::Effect("emboss")));
+    // a transition the compositor doesn't draw
+    let mut s = scene(1);
+    let a = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    let a = place(&mut s.p, s.seq, 0, a);
+    dissolve(&mut s, 0, Some(a), None, 6);
+    assert_eq!(crate::plan::cpu_frame_cause(&s.p, s.seq, R.tick_of(12)), None, "cross dissolves run on the GPU");
+    s.p.sequence_mut(s.seq).unwrap().video_tracks[0].transitions[0].effect = find_effect("clock_wipe").unwrap().instance();
+    let before = fallbacks(Scope::Frame, Fallback::Transition("clock_wipe"));
+    assert!(matches!(plan_at(&s, 12), crate::plan::FramePlan::Image(_)));
+    assert_eq!(fallbacks(Scope::Frame, Fallback::Transition("clock_wipe")), before + 1);
+}

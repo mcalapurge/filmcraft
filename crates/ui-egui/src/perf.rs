@@ -31,6 +31,15 @@ pub fn stats(app: &FilmcraftApp) -> Value {
     frames["renderCostMs"] = json!(app.frames.render_cost() * 1e3);
     frames["cache"] = json!({"images": images, "imageMB": image_bytes as f64 / 1e6, "plans": plans, "planMB": plan_bytes as f64 / 1e6});
     v["frames"] = frames;
+    // the GPU export renderer's part of `export.stages.gpuRenderMs` (summed over its threads)
+    let g = filmcraft_gpu::export_renderer::timing::get();
+    v["export"]["gpuRenderer"] = json!({
+        "frames": g.frames,
+        "planMs": g.plan.as_secs_f64() * 1e3,
+        "submitMs": g.submit.as_secs_f64() * 1e3,
+        "mapWaitMs": g.map_wait.as_secs_f64() * 1e3,
+        "convertMs": g.convert.as_secs_f64() * 1e3,
+    });
     v["gpu"] = app.gpu.as_ref().map_or(Value::Null, |g| {
         json!({
             "uploadedBytes": g.compositor.uploaded_bytes,

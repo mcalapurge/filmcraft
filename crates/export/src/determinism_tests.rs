@@ -58,7 +58,8 @@ fn an_export_adds_up_the_wall_time_of_its_stages() {
         at(&after) > at(&before)
     };
     // other tests export in parallel, so the counters can only be checked for growth
-    for stage in [Stage::Setup, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish] {
+    // (CPU or GPU render depends on renderers other tests register; the post stage runs either way)
+    for stage in [Stage::Setup, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish, Stage::Post] {
         assert!(grew(stage), "{} did not grow", stage.name());
     }
     assert_eq!(Stage::ALL.len(), after.len(), "one counter per stage");

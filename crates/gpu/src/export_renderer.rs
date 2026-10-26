@@ -22,6 +22,7 @@ pub mod timing {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    static PLAN_NS: AtomicU64 = AtomicU64::new(0);
     static SUBMIT_NS: AtomicU64 = AtomicU64::new(0);
     static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
     static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +31,9 @@ pub mod timing {
     /// Totals since the last [`reset`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct GpuTimings {
+        /// Planning the frame: deciding its layers, decoding their sources, CPU-rendered layers
+        /// (and whole frames the plan renders on the CPU).
+        pub plan: Duration,
         /// Recording and submitting the frame's commands.
         pub submit: Duration,
         /// Waiting for the GPU and the staging buffer's mapping.
@@ -42,6 +46,10 @@ pub mod timing {
 
     fn add(counter: &AtomicU64, d: Duration) {
         counter.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_plan(d: Duration) {
+        add(&PLAN_NS, d);
     }
 
     pub(crate) fn add_submit(d: Duration) {
@@ -62,11 +70,11 @@ pub mod timing {
 
     pub fn get() -> GpuTimings {
         let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
-        GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
+        GpuTimings { plan: d(&PLAN_NS), submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
     }
 
     pub fn reset() {
-        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+        for c in [&PLAN_NS, &SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
             c.store(0, Ordering::Relaxed);
         }
     }
@@ -132,7 +140,9 @@ impl ExportRenderer {
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+        let planning = std::time::Instant::now();
         let plan = plan_frame(project, seq, t, opts, sources);
+        timing::add_plan(planning.elapsed());
         match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
