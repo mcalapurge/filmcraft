@@ -118,3 +118,10 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Font fallbacks
+
+The theme installs every embedded craft-fonts script as a fallback after its ordered Japanese,
+Chinese and right-to-left faces. Font-picker samples (including Devanagari) therefore draw safely
+in every UI family and theme. Builds without craft-fonts retain their bundled/system fallback
+behavior; no new font files are stored in this repository.
