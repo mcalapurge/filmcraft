@@ -136,10 +136,12 @@ Settings are standard Lumetri parameters (`selective_on`, `selective_<band>_colo
 keyframeable through Effect Controls. Automation ids include `lumetri.selective.band.<band>`,
 `lumetri.selective.eyedropper`, `.target`, `.reset`, and `lumetri.param.selective_<band>_<field>`.
 Agents can bypass with `lumetri.setSection` and `section: "selective"`, and edit with
-`effects.setParam`. The interface follows FilmCraft's existing controls; no external artwork
+`effects.setParam` (one clip) or `lumetri.setParam` (every selected video clip, as the panel
+does: with several clips selected, each Lumetri change, Selective Colour included, applies to all
+of them in one undo step, adding Lumetri where a clip has none). The interface follows FilmCraft's existing controls; no external artwork
 is used. The adjustment is our own algorithm, with no claim of matching Apple Photos numerically.
 
-`lumetri.resetSelectiveBand {clip?, band}` restores one band’s defaults and clears its
+`lumetri.resetSelectiveBand {clip?, clips?, band}` restores one band’s defaults and clears its
 keyframes in a single undo step. Unknown or missing band names return an error.
 
 

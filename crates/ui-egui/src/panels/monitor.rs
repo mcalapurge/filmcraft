@@ -613,11 +613,17 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     };
     // the parameter stores linear values, like the colour picker beside it
     let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
+    let value = json!([lin.r(), lin.g(), lin.b(), 1.0]);
+    // armed in the Lumetri panel: the colour goes to every clip it edits
+    let (cmd, mut params) = if armed.lumetri_clips.is_empty() {
+        ("effects.setParam", json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": value}))
+    } else {
+        ("lumetri.setParam", json!({"clips": armed.lumetri_clips, "param": armed.param, "value": value}))
+    };
     if let Some(k) = armed.mask {
         params["mask"] = json!(k);
     }
-    if let Err(e) = app.session.execute("effects.setParam", params) {
+    if let Err(e) = app.session.execute(cmd, params) {
         app.ui.status = e.to_string();
     }
 }

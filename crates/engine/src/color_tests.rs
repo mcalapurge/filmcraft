@@ -82,11 +82,16 @@ fn import_lut_set_input_and_look_then_undo() {
     let js = serde_json::to_string(&*s.project).unwrap();
     let back: filmcraft_project::Project = serde_json::from_str(&js).unwrap();
     assert_eq!(back.luts, s.project.luts);
-    // undo the look, the section toggles and the input LUT
-    for _ in 0..4 {
+    // undo the look and the section toggles
+    for _ in 0..3 {
         s.execute("edit.undo", json!({})).unwrap();
     }
     assert_eq!(lumetri_text(&s, clip, "look_lut"), "");
+    assert_eq!(lumetri_text(&s, clip, "input_lut"), lref);
+    // importing the file, adding Lumetri and setting the input LUT were one step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(lumetri_of(&s, clip).is_none());
+    assert!(s.project.luts.is_empty());
     let _ = std::fs::remove_file(&path);
 }
 
@@ -148,11 +153,9 @@ fn apply_match_grades_the_clip_towards_the_reference() {
         .iter()
         .any(|w| e.param(w).and_then(|p| p.value.as_vec2()).is_some_and(|v| v.x.abs() + v.y.abs() > 1e-3));
     assert!(moved, "{r}");
-    // one undo step
+    // one undo step, the Lumetri it added included
     s.execute("edit.undo", json!({})).unwrap();
-    let q = s.active_sequence().unwrap();
-    let e = q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").unwrap();
-    assert_eq!(e.param("wheel_midtones").and_then(|p| p.value.as_vec2()).map(|v| v.x), Some(0.0));
+    assert!(lumetri_of(&s, clip).is_none());
     // a reference inside the clip itself is refused
     let inside = s.playhead();
     assert!(s.execute("lumetri.applyMatch", json!({"referenceTime": inside.0})).is_err());
@@ -284,4 +287,104 @@ fn selective_colour_reset_rejects_unknown_bands_without_editing() {
         assert!(s.execute("lumetri.resetSelectiveBand", json!({"clip": clip.0, "band": band})).is_err());
         assert_eq!(s.revision, rev);
     }
+}
+
+fn lumetri_of(s: &Session, clip: ClipId) -> Option<filmcraft_project::EffectInstance> {
+    let (_, it) = s.active_sequence()?.find_item(clip)?;
+    it.effects.iter().find(|e| e.effect == "lumetri").cloned()
+}
+
+fn lumetri_f64(s: &Session, clip: ClipId, p: &str) -> Option<f64> {
+    lumetri_of(s, clip).map(|e| e.f64_at(p, filmcraft_time::Tick::ZERO))
+}
+
+/// The first two V1 clips, both selected: `a` with no effects, `b` with a blur before its Lumetri
+/// (so Lumetri sits at a different index on each).
+fn two_selected(s: &mut Session) -> (ClipId, ClipId) {
+    let q = s.active_sequence().unwrap();
+    let (a, b) = (q.video_tracks[0].items[0].id, q.video_tracks[0].items[1].id);
+    s.execute("effects.apply", json!({"clips": [b.0], "effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [b.0], "effect": "lumetri"})).unwrap();
+    s.execute("timeline.select", json!({"clips": [a.0, b.0]})).unwrap();
+    (a, b)
+}
+
+#[test]
+fn selective_colour_edits_every_selected_clip_in_one_undo_step() {
+    let mut s = demo();
+    let (a, b) = two_selected(&mut s);
+    assert!(lumetri_of(&s, a).is_none());
+    // in selection order: the first is the clip the Lumetri panel shows
+    assert_eq!(crate::color::lumetri_targets(&s, &json!({})).unwrap(), vec![a, b]);
+    let r = s.execute("lumetri.setParam", json!({"param": "selective_green_hue", "value": 40.0})).unwrap();
+    assert_eq!(r["clip"], a.0);
+    assert_eq!(r["clips"], json!([a.0, b.0]));
+    for c in [a, b] {
+        assert_eq!(lumetri_f64(&s, c, "selective_green_hue"), Some(40.0), "clip {c:?}");
+    }
+    // one undo step, which also takes back the Lumetri it added to `a`
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(lumetri_of(&s, a).is_none());
+    assert_eq!(lumetri_f64(&s, b, "selective_green_hue"), Some(0.0));
+    s.execute("edit.redo", json!({})).unwrap();
+
+    // a drag is one undo step across the clips
+    let undo = s.history.undo.len();
+    for v in [10.0, 20.0, 30.0] {
+        s.execute("lumetri.setParam", json!({"param": "selective_red_sat", "value": v, "merge": true})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert_eq!(lumetri_f64(&s, a, "selective_red_sat"), Some(30.0));
+    assert_eq!(lumetri_f64(&s, b, "selective_red_sat"), Some(30.0));
+
+    let r = s.execute("lumetri.resetSelectiveBand", json!({"band": "green"})).unwrap();
+    assert_eq!(r["clips"], json!([a.0, b.0]));
+    for c in [a, b] {
+        assert_eq!(lumetri_f64(&s, c, "selective_green_hue"), Some(0.0), "clip {c:?}");
+    }
+    s.execute("lumetri.setSection", json!({"section": "selective"})).unwrap();
+    for c in [a, b] {
+        assert_eq!(lumetri_of(&s, c).and_then(|e| e.param("selective_on").and_then(|p| p.value.as_bool())), Some(false), "clip {c:?}");
+    }
+    s.execute("lumetri.setLook", json!({"lut": "builtin:look-teal-orange"})).unwrap();
+    for c in [a, b] {
+        assert_eq!(lumetri_text(&s, c, "look_lut"), "builtin:look-teal-orange");
+    }
+    s.execute("lumetri.setEnabled", json!({})).unwrap();
+    assert!([a, b].iter().all(|c| lumetri_of(&s, *c).is_some_and(|e| !e.enabled)));
+
+    // naming a clip edits only that clip
+    s.execute("lumetri.setParam", json!({"clip": a.0, "param": "selective_blue_luma", "value": -25.0})).unwrap();
+    assert_eq!(lumetri_f64(&s, a, "selective_blue_luma"), Some(-25.0));
+    assert_eq!(lumetri_f64(&s, b, "selective_blue_luma"), Some(0.0));
+    // bad values change nothing on any clip
+    let rev = s.revision;
+    assert!(s.execute("lumetri.setParam", json!({"param": "selective_red_hue", "value": 999.0})).is_err());
+    assert!(s.execute("lumetri.setParam", json!({"param": "selective_red_hue", "value": "x"})).is_err());
+    assert!(s.execute("lumetri.setParam", json!({"param": "nope", "value": 1.0})).is_err());
+    assert!(s.execute("lumetri.setParam", json!({"clips": [], "param": "selective_red_hue", "value": 1.0})).is_err());
+    assert_eq!(s.revision, rev);
+}
+
+#[test]
+fn apply_match_matches_every_selected_clip() {
+    let mut s = demo();
+    let (a, b) = two_selected(&mut s);
+    let q = s.active_sequence().unwrap();
+    let last = q.video_tracks[0].items.last().unwrap().clone();
+    let reference = last.start + filmcraft_time::Tick(last.duration.0 / 2);
+    let r = s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0})).unwrap();
+    assert_eq!(r["clips"].as_array().map(Vec::len), Some(2), "{r}");
+    for c in [a, b] {
+        assert_eq!(lumetri_of(&s, c).and_then(|e| e.param("wheels_on").and_then(|p| p.value.as_bool())), Some(true), "clip {c:?}");
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(lumetri_of(&s, a).is_none(), "one undo step");
+    // the clip holding the reference frame is skipped, the others are matched
+    s.execute("timeline.select", json!({"clips": [a.0, last.id.0]})).unwrap();
+    let r = s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0})).unwrap();
+    assert_eq!(r["skipped"], json!([last.id.0]));
+    assert_eq!(r["clips"][0]["clip"], a.0);
+    s.execute("timeline.select", json!({"clips": [last.id.0]})).unwrap();
+    assert!(s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0})).is_err());
 }

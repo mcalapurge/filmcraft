@@ -1,5 +1,7 @@
 //! Lumetri Color panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
-//! HSL Secondary, Vignette — editing the selected clip's Lumetri effect through engine commands.
+//! HSL Secondary, Vignette — editing the Lumetri effect of every selected video clip through engine
+//! commands, one undo step per change (Lumetri is added to a selected clip that has none). The panel
+//! shows the first selected video clip's values.
 //!
 //! In an HDR sequence (Rec. 2100 PQ / HLG working space) Basic Correction shows HDR White and
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
@@ -21,17 +23,19 @@ use crate::widgets::HotNumberOptions;
 
 type Actions = Vec<Value>;
 
-fn selected(app: &FilmcraftApp) -> Option<(ClipId, filmcraft_project::TrackItem)> {
-    let seq = app.session.active_sequence()?;
-    app.session.state.selection.iter().find_map(|c| {
-        let (tid, it) = seq.find_item(*c)?;
-        (seq.track(tid)?.kind == filmcraft_project::TrackKind::Video).then(|| (*c, it.clone()))
-    })
+/// The clips the panel edits (every selected video clip, see
+/// `filmcraft_engine::color::lumetri_targets`), and the first one, which it shows.
+fn selected(app: &FilmcraftApp) -> Option<(Vec<ClipId>, ClipId, filmcraft_project::TrackItem)> {
+    let clips = filmcraft_engine::color::lumetri_targets(&app.session, &json!({})).ok()?;
+    let clip = *clips.first()?;
+    let (_, it) = app.session.active_sequence()?.find_item(clip)?;
+    let it = it.clone();
+    Some((clips, clip, it))
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let Some((clip, it)) = selected(app) else {
+    let Some((clips, clip, it)) = selected(app) else {
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };
@@ -40,11 +44,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
-            let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
+        let label = if clips.len() > 1 { tlf!("Add Lumetri Color to {n} clips", n = clips.len()) } else { tl!("Add Lumetri Color to clip").to_string() };
+        let add = bui.button(label);
+        app.auto.add("lumetri.add", add.rect, "Add Lumetri Color");
+        if add.clicked() {
+            let seq = app.session.active_sequence();
+            let missing: Vec<u64> = clips
+                .iter()
+                .filter(|c| seq.and_then(|q| q.find_item(**c)).is_some_and(|(_, it)| !it.effects.iter().any(|e| e.effect == "lumetri")))
+                .map(|c| c.0)
+                .collect();
+            if let Err(err) = app.session.execute("effects.apply", json!({"clips": missing, "effect": "lumetri"})) {
+                app.ui.status = err.to_string();
+            }
         }
         return;
     };
+    let clip_ids: Vec<u64> = clips.iter().map(|c| c.0).collect();
     let e = it.effects[idx].clone();
     // HDR mode: the sequence's working space is Rec. 2100 PQ or HLG
     let hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
@@ -57,14 +73,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     bui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let fx = ui.add(egui::Button::new(egui::RichText::new("fx").italics().color(if e.enabled { t.text } else { t.text_faint })).frame(false));
-            if fx.clicked() {
-                let _ = app.session.execute("effects.toggleEnabled", json!({"clip": clip.0, "index": idx}));
+            app.auto.add("lumetri.fx", fx.rect, "Lumetri Color on/off");
+            if fx.clicked()
+                && let Err(err) = app.session.execute("lumetri.setEnabled", json!({"clips": clip_ids, "on": !e.enabled}))
+            {
+                app.ui.status = err.to_string();
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim)).truncate());
             });
         });
     });
+    if clips.len() > 1 {
+        let r = bui.label(egui::RichText::new(tlf!("Edits apply to all {n} selected clips.", n = clips.len())).color(t.text_faint).size(11.0));
+        app.auto.add("lumetri.selectionCount", r.rect, "Selected clips");
+    }
     let set = |actions: &mut Actions, param: &str, v: Value| actions.push(json!({"clip": clip.0, "effect": idx, "param": param, "value": v}));
     let mut sections: Vec<&'static str> = Vec::new();
     let mut lut_actions: Vec<(&'static str, Value)> = Vec::new();
@@ -206,7 +229,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let color_id = format!("selective_{band}_color");
             ui.horizontal(|ui| {
                 ui.label(names.get(selected).copied().unwrap_or(tl!("Red")));
-                let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: color_id.clone(), mask: None };
+                let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: color_id.clone(), mask: None, lumetri_clips: clip_ids.clone() };
                 let armed = app.ui.eyedropper.as_ref() == Some(&target);
                 let r = icons::button(ui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
                 app.auto.add("lumetri.selective.eyedropper", r.rect, "Eyedropper");
@@ -291,10 +314,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&id, r, label);
         }
     }
-    // a dragged value is one undo step, as in Effect Controls
-    crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
+    // the controls describe the shown clip's Lumetri; every change goes to all the selected clips,
+    // and a dragged value is one undo step, as in Effect Controls
+    let edits = actions
+        .into_iter()
+        .map(|mut a| {
+            if let Some(o) = a.as_object_mut() {
+                o.remove("clip");
+                o.remove("effect");
+                o.insert("clips".into(), json!(clip_ids));
+            }
+            ("lumetri.setParam".to_string(), a)
+        })
+        .collect();
+    crate::panels::effect_controls::run(app, ui.ctx(), edits);
     for sec in sections {
-        if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
+        if let Err(err) = app.session.execute("lumetri.setSection", json!({"clips": clip_ids, "section": sec})) {
             app.ui.status = err.to_string();
         }
     }
@@ -308,16 +343,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         if p.get("browse").is_some() {
-            let (cmd, clip) = (cmd.to_string(), clip.0);
+            let (cmd, clips) = (cmd.to_string(), clip_ids.clone());
             app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
-                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
+                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clips": clips})) {
                     app.ui.status = err.to_string();
                 }
             });
             continue;
         }
-        p["clip"] = json!(clip.0);
+        p["clips"] = json!(clip_ids);
         if let Err(err) = app.session.execute(cmd, p) {
             app.ui.status = err.to_string();
         }
