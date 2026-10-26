@@ -87,8 +87,8 @@ export's (`jobs.list`, `jobs.cancel`).
 
 Cancelling a job terminates the worker (Whisper can't be interrupted mid-window); the next job
 starts a fresh one. A worker error or panic ends the job with its message and is never fatal to
-the page. One job takes at most 2 hours of audio, since the samples are held by both the page and
-the worker.
+the page. At most eight speech jobs may be pending, sharing a two-hour audio budget, since the
+samples are held by both the page and the worker.
 
 On an Apple M-series Mac in Chrome, base transcribes about 4.3× faster than real time and tiny
 about 7×, roughly half the desktop's single-threaded speed. Peak wasm memory in the worker is

@@ -263,3 +263,14 @@ fn a_failed_host_job_reports_its_error() {
     assert!(s.project.transcripts.is_empty());
     assert!(toasts(&mut s).iter().any(|(m, e)| m.contains("404") && *e));
 }
+
+#[test]
+fn pending_speech_jobs_are_bounded() {
+    let (mut s, _, _) = session();
+    for _ in 0..8 {
+        s.execute("transcript.downloadModel", json!({"model": "whisper-tiny"})).unwrap();
+    }
+    let jobs = s.jobs.len();
+    assert!(s.execute("transcript.downloadModel", json!({"model": "whisper-tiny"})).is_err());
+    assert_eq!(s.jobs.len(), jobs, "a rejected request must not allocate another job");
+}

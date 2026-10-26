@@ -173,7 +173,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         let model = model_p(s, p)?;
         let n = items.len();
         let label = format!("Transcribe ({n} clip{})", if n == 1 { "" } else { "s" });
-        let id = start_host_job(s, host.as_ref(), label, model, items.clone(), opts, then);
+        let id = start_host_job(s, host.as_ref(), label, model, items.clone(), opts, then)?;
         return Ok(json!({"job": id, "items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "model": model.id, "poll": "jobs.list", "cancel": "jobs.cancel"}));
     }
     let t = transcriber(s, p)?;
@@ -341,7 +341,10 @@ fn start_host_job(
     items: Vec<ItemId>,
     options: Options,
     then: Vec<(String, Value)>,
-) -> u64 {
+) -> Result<u64> {
+    if s.transcript_jobs.len() >= 8 {
+        return Err(bad("transcript.generate", "at most 8 speech jobs may be pending; finish or cancel a job first"));
+    }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(1000, Ordering::Relaxed);
@@ -358,7 +361,7 @@ fn start_host_job(
         // a download needs no audio: hand it over now
         poll_one(s, host, s.transcript_jobs.len() - 1);
     }
-    id
+    Ok(id)
 }
 
 /// Read the audio of a pending job's clips for up to [`READ_BUDGET`]. Returns an error that ends
@@ -381,10 +384,12 @@ fn read_audio(s: &Session, pj: &mut PendingTranscript, progress: &filmcraft_expo
         }
         pj.reads.retain(|r| r.len > 0);
         pj.skipped.extend(skipped);
-        let total: u64 = pj.reads.iter().map(|r| r.len as u64).sum();
+        // The cap is shared by pending jobs: separately admitting two hours per job can
+        // exhaust the UI's wasm memory while the single worker processes its backlog.
+        let total = pj.reads.iter().chain(s.transcript_jobs.iter().flat_map(|job| &job.reads)).fold(0u64, |total, read| total.saturating_add(read.len as u64));
         if total > MAX_HOST_AUDIO_SECONDS * sr as u64 {
             return Err(format!(
-                "{:.1} hours of audio is more than this build transcribes at once ({} hours); transcribe fewer clips at a time",
+                "{:.1} hours of pending audio is more than this build transcribes at once ({} hours); transcribe fewer clips at a time",
                 total as f64 / sr as f64 / 3600.0,
                 MAX_HOST_AUDIO_SECONDS / 3600
             ));
@@ -753,7 +758,7 @@ fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
         if host.installed(m.id) {
             return Ok(json!({"model": m.id, "installed": true}));
         }
-        let job = start_host_job(s, host.as_ref(), format!("Download {}", m.name), m, Vec::new(), Options::default(), Vec::new());
+        let job = start_host_job(s, host.as_ref(), format!("Download {}", m.name), m, Vec::new(), Options::default(), Vec::new())?;
         return Ok(json!({"model": m.id, "job": job, "poll": "jobs.list", "cancel": "jobs.cancel"}));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
