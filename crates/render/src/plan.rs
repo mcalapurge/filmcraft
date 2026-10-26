@@ -329,6 +329,15 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
 
 /// What keeps the frame of `seq` at `t` from planning as layers ([`layered_at`]).
 fn frame_cause(project: &Project, seq: &Sequence, t: Tick) -> Option<Fallback> {
+    frame_cause_with(project, seq, t, |it| adjustment_ops(project, seq, it, t, 1.0).is_some())
+}
+
+/// Render-bar hint only: never builds shader payloads or reads LUT tables.
+pub(crate) fn estimate_layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
+    frame_cause_with(project, seq, t, |it| adjustment_is_plain(seq, it, it.source_time_at(t)) && crate::preview::gpu_effect_cost(it).is_some()).is_none()
+}
+
+fn frame_cause_with(project: &Project, seq: &Sequence, t: Tick, adjustment_supported: impl Fn(&TrackItem) -> bool) -> Option<Fallback> {
     let adjustment = |it: &TrackItem| project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }));
     for tr in &seq.video_tracks {
         if !tr.enabled {
@@ -344,7 +353,7 @@ fn frame_cause(project: &Project, seq: &Sequence, t: Tick) -> Option<Fallback> {
         }
         if let Some(it) = tr.item_at(t)
             && adjustment(it)
-            && adjustment_ops(project, seq, it, t, 1.0).is_none()
+            && !adjustment_supported(it)
         {
             return Some(adjustment_cause(seq, it, t));
         }

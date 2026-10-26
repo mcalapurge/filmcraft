@@ -498,39 +498,24 @@ fn cpu_layer(project: &Project, it: &TrackItem) -> bool {
     fx || blend || nested
 }
 
-fn layer_cost(project: &Project, seq: &Sequence, it: &TrackItem, px: f64, force_cpu: bool, t: Tick, gpu: bool) -> f64 {
-    if gpu && !force_cpu && !it.has_opacity_masks() && crate::plan::layered_at(project, seq, t) {
-        let cx = crate::effects::FxCtx {
-            t: it.source_time_at(t),
-            px_scale: 1.0,
-            seconds: 0.0,
-            timecode: "",
-            clip_name: &it.name,
-            project: Some(project),
-            env: None,
-            frame_rate: seq.settings.frame_rate.as_f64(),
-            working: seq.settings.color.working,
-        };
-        let effects: Option<Vec<_>> = it
-            .effects
-            .iter()
-            .filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic))
-            .map(|e| {
-                if e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) {
-                    return None;
-                }
-                crate::gpufx::FxOp::eval(e, &cx, seq.settings.width as usize, seq.settings.height as usize).filter(crate::gpufx::FxOp::gpu_ok)
-            })
-            .collect();
+/// Approximate shader cost, independent of LUT size and shader payload construction.
+/// This is a UI hint, not permission to render on the GPU: the planner still validates
+/// evaluated parameters and adapter/resource limits before selecting the actual path.
+pub(crate) fn gpu_effect_cost(it: &TrackItem) -> Option<f64> {
+    it.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic)).try_fold(0.0, |cost, e| {
+        if e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) || !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+            return None;
+        }
+        // HSL refinement can require multiple full-frame passes. Use a conservative
+        // estimate without evaluating curves, kernels or imported LUTs on the UI thread.
+        Some(cost + if e.effect == "lumetri" && crate::effects::b(e, "hsl_on") { 12.0 } else { 3.0 })
+    })
+}
+
+fn layer_cost(project: &Project, it: &TrackItem, px: f64, force_cpu: bool, gpu_layered: bool) -> f64 {
+    if gpu_layered && !force_cpu && !it.has_opacity_masks() {
         let media = project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::AdjustmentLayer { .. }));
-        if media && let Some(effects) = effects {
-            let cost: f64 = effects
-                .iter()
-                .map(|op| match op {
-                    crate::gpufx::FxOp::LumetriFull(full) if full.hsl && (full.median_radius > 0 || !full.mask_blur.0.is_empty()) => 12.0,
-                    _ => 3.0,
-                })
-                .sum();
+        if media && let Some(cost) = gpu_effect_cost(it) {
             return decode_cost_ms(project, it.item, 0) + 0.5 + cost * px;
         }
     }
@@ -544,13 +529,14 @@ fn layer_cost(project: &Project, seq: &Sequence, it: &TrackItem, px: f64, force_
 
 fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer], t: Tick, gpu: bool) -> f64 {
     let px = (seq.settings.width as f64 * seq.settings.height as f64) / HD_PIXELS;
+    let gpu_layered = gpu && crate::plan::estimate_layered_at(project, seq, t);
     let mut total = 0.0;
     for l in layers {
         total += match l {
-            Layer::Item(_, it) => layer_cost(project, seq, it, px, false, t, gpu),
+            Layer::Item(_, it) => layer_cost(project, it, px, false, gpu_layered),
             Layer::Transition(_, x, a, b) => {
                 let simple = matches!(x.effect.effect.as_str(), "cross_dissolve" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve");
-                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, seq, it, px, !simple, t, gpu))).sum();
+                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, it, px, !simple, gpu_layered))).sum();
                 sides + if simple { 1.0 } else { 12.0 * px }
             }
         };

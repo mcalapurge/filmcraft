@@ -312,3 +312,33 @@ fn lumetri_gpu_render_bar_estimate_preserves_preview_hashes() {
     assert!(gpu[0].cost_ms < cpu[0].cost_ms);
     assert_eq!(gpu[0].need, Need::Realtime);
 }
+
+#[test]
+fn gpu_cost_estimation_never_builds_lumetri_payloads() {
+    use filmcraft_project::{Mask, MaskPath};
+    let (mut p, matte, _, seq) = setup();
+    let base = place(&mut p, seq, 0, matte, 0, 48);
+    let adjustment = p.add_item(
+        "grade",
+        Label::Iris,
+        ItemKind::AdjustmentLayer { width: 1920, height: 1080, rate: FrameRate::FPS_24, duration: FrameRate::FPS_24.tick_of(48) },
+        None,
+    );
+    let grade = place(&mut p, seq, 1, adjustment, 0, 48);
+    for id in [base, grade] {
+        add_fx(&mut p, seq, id, "lumetri");
+        let fx = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap().1.effects.last_mut().unwrap();
+        fx.param_mut("hsl_on").unwrap().value = ParamValue::Bool(true);
+    }
+    crate::lumetri_gpu::EVALUATIONS.with(|count| count.set(0));
+    let gpu = crate::preview::video_segments_with_gpu(&p, seq, true);
+    assert!(gpu[0].cost_ms < video_segments(&p, seq)[0].cost_ms);
+    crate::lumetri_gpu::EVALUATIONS.with(|count| assert_eq!(count.get(), 0, "render bars must not build shader tables"));
+
+    // A masked adjustment forces the entire frame back to the CPU estimate.
+    let fx = p.sequence_mut(seq).unwrap().find_item_mut(grade).unwrap().1.effects.last_mut().unwrap();
+    fx.masks.push(Mask::new("mask", MaskPath::rect(0.0, 0.0, 100.0, 100.0)));
+    let masked = crate::preview::video_segments_with_gpu(&p, seq, true);
+    assert!(masked[0].cost_ms > gpu[0].cost_ms);
+    crate::lumetri_gpu::EVALUATIONS.with(|count| assert_eq!(count.get(), 0));
+}

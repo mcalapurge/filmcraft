@@ -10,6 +10,11 @@ use filmcraft_project::{EffectInstance, Project, ProjectLut};
 use filmcraft_time::Tick;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Tables are bounded below the minimum storage-buffer binding limit of supported adapters.
 pub const MAX_DATA_FLOATS: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +78,8 @@ fn append_lut(data: &mut Vec<f32>, lut: &Lut) -> Option<usize> {
 }
 impl LumetriGpu {
     pub fn eval(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> Option<Self> {
+        #[cfg(test)]
+        EVALUATIONS.with(|count| count.set(count.get() + 1));
         if !cx.px_scale.is_finite() || !(0.0..=16.0).contains(&cx.px_scale) {
             return None;
         }
