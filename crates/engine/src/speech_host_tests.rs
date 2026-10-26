@@ -160,7 +160,13 @@ fn then_also_runs_when_transcribing_in_the_command() {
 #[test]
 fn hostile_then_is_refused() {
     let (mut s, _, item) = session();
-    for then in [json!(3), json!([{"params": {}}]), json!([{"command": "transcript.generate"}])] {
+    for then in [
+        json!(3),
+        json!([{"params": {}}]),
+        json!([{"command": "transcript.generate"}]),
+        json!([{"command": "captions.createLive", "params": 42}]),
+        json!(vec![json!({"command": "captions.createLive"}); 17]),
+    ] {
         assert!(s.execute("transcript.generate", json!({"items": [item.0], "then": then})).is_err(), "{then}");
     }
     assert!(s.transcript_jobs.is_empty(), "no job for a refused command");

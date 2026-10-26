@@ -211,13 +211,20 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
 fn then_p(p: &Value) -> Result<Vec<(String, Value)>> {
     let Some(list) = p.get("then") else { return Ok(Vec::new()) };
     let list = list.as_array().ok_or_else(|| bad("transcript.generate", "`then` must be a list of {\"command\", \"params\"}"))?;
+    if list.len() > MAX_THEN {
+        return Err(bad("transcript.generate", "`then` accepts at most 16 follow-up commands"));
+    }
     let mut out = Vec::new();
-    for c in list.iter().take(MAX_THEN) {
+    for c in list {
         let id = c["command"].as_str().ok_or_else(|| bad("transcript.generate", "each `then` entry needs a `command`"))?;
         if id == "transcript.generate" {
             return Err(bad("transcript.generate", "`then` can't run transcript.generate"));
         }
-        out.push((id.to_string(), c.get("params").cloned().unwrap_or_else(|| json!({}))));
+        let params = c.get("params").cloned().unwrap_or_else(|| json!({}));
+        if !params.is_object() {
+            return Err(bad("transcript.generate", "follow-up `params` must be an object"));
+        }
+        out.push((id.to_string(), params));
     }
     Ok(out)
 }
@@ -768,7 +775,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"then":[{"command":id,"params":object}]? (up to 16 follow-up commands)}"#,
             can_transcribe,
             generate,
             true,
