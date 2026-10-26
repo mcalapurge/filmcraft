@@ -1244,3 +1244,38 @@ fn dragging_clips_onto_new_item_makes_a_matching_sequence() {
     assert_eq!(sequences(&mut d), n0 + 2);
     assert_eq!(clips(&mut d), 2, "the whole selection is placed");
 }
+
+// The macOS menu bar takes Cmd+A, Cmd+Z… as key equivalents, so they arrive as menu commands, not
+// keys. While a name is being typed they act on the name field: Select All selected every item
+// (or Timeline clip) and left the name's text unselected, and Undo undid the last project edit.
+#[test]
+fn menu_edit_commands_act_on_the_name_being_typed() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, items) = d.footage();
+    d.frames(2);
+    d.click(&format!("project.bin.{bin}.toggle"));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    let (menu, inbox) = channel();
+    d.app().command_inbox = Some(inbox);
+    d.exec("project.select", json!({"items": [items[0]]}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.rename"}));
+    d.frames(3);
+    assert!(d.has("project.rename"));
+    menu.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    assert_eq!(d.app().session.state.project_selection, vec![ItemId(items[0])], "Select All left the project selection alone");
+    d.ok("ui.type", json!({"text": "Hero shot"}));
+    d.frames(2);
+    d.key("Enter");
+    d.frames(2);
+    assert_eq!(d.app().session.project.item(ItemId(items[0])).unwrap().name, "Hero shot", "the typed name replaced all of the old one");
+    // Undo while renaming again stays in the field: the rename above is not undone
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.rename"}));
+    d.frames(3);
+    assert!(d.has("project.rename"));
+    menu.send("edit.undo".to_string()).unwrap();
+    d.frames(2);
+    assert_eq!(d.app().session.project.item(ItemId(items[0])).unwrap().name, "Hero shot");
+    assert!(d.app().ui.project_panel.rename.is_some(), "still renaming");
+}
