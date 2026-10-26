@@ -253,6 +253,11 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
                 let sequence = std::sync::Arc::make_mut(sequence);
+                // Live-caption words out of order or past their caption (written by an earlier
+                // build) are put back inside it, as an edit would, instead of refusing the file.
+                for caption in sequence.caption_tracks.iter_mut().flat_map(|t| t.captions.iter_mut()) {
+                    caption.clamp_words();
+                }
                 for clip in sequence.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
                     if clip.audio_stream >= max {
                         log::warn!("sequence `{name}`: clip `{}` uses audio stream {}, reset to 0", clip.name, clip.audio_stream);
@@ -449,6 +454,68 @@ mod tests {
         assert!(p.sequence(seq).unwrap().check().is_err(), "the sequence breaks the editor's invariants");
         let loaded = decode(&encode(&p, false)).unwrap_or_else(|e| panic!("a project that opened before is refused: {e}"));
         assert_eq!(loaded.project.sequence(seq).unwrap().video_tracks[0].items.len(), 3);
+    }
+
+    /// Review fix: live-caption words an earlier build left out of order or past their caption (an
+    /// insert through the caption, a frame-rate conform) are repaired on open, not refused.
+    #[test]
+    fn misplaced_caption_words_are_repaired_on_open() {
+        use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, CaptionWord, ClipId, SequenceSettings, TrackId};
+        use filmcraft_time::Tick;
+        let mut p = Project::new("Live");
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
+        let word = |text: &str, a, b| CaptionWord { text: text.into(), start: Tick(a), end: Tick(b) };
+        let mut track = CaptionTrack::new(TrackId(900), "Live".into(), CaptionFormat::Subtitle);
+        track.captions.push(Caption {
+            id: ClipId(901),
+            start: Tick(0),
+            duration: Tick(1000),
+            text: "hello there world gone".into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: vec![word("hello", 0, 500), word("there", 400, 700), word("world", 700, 1001), word("gone", 1200, 1400)],
+        });
+        p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+        let loaded = decode(&encode(&p, false)).unwrap_or_else(|e| panic!("a project that opened before is refused: {e}"));
+        let q = loaded.project.sequence(seq).unwrap();
+        q.check().unwrap();
+        let c = &q.caption_tracks[0].captions[0];
+        assert_eq!(
+            c.words.iter().map(|w| (w.text.as_str(), w.start.0, w.end.0)).collect::<Vec<_>>(),
+            [("hello", 0, 500), ("there", 500, 700), ("world", 700, 1000)]
+        );
+        assert_eq!(c.text, "hello there world");
+    }
+
+    /// Repairing caption words on open is stable: saving the repaired project and opening it again
+    /// changes nothing (a word squeezed to the caption's end is not dropped one open later).
+    #[test]
+    fn caption_word_repair_is_stable_across_reopens() {
+        use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, CaptionWord, ClipId, SequenceSettings, TrackId};
+        use filmcraft_time::Tick;
+        let mut p = Project::new("Live");
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
+        let word = |text: &str, a, b| CaptionWord { text: text.into(), start: Tick(a), end: Tick(b) };
+        let mut track = CaptionTrack::new(TrackId(900), "Live".into(), CaptionFormat::Subtitle);
+        track.captions.push(Caption {
+            id: ClipId(901),
+            start: Tick(0),
+            duration: Tick(100),
+            text: "hello world".into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: vec![word("hello", 0, 100), word("world", 50, 90)],
+        });
+        p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+        let first = decode(&encode(&p, false)).unwrap().project;
+        let second = decode(&encode(&first, false)).unwrap().project;
+        let third = decode(&encode(&second, false)).unwrap().project;
+        let tracks = |q: &Project| q.sequence(seq).unwrap().caption_tracks.clone();
+        assert_eq!(tracks(&first), tracks(&second), "the second open changed the repaired captions");
+        assert_eq!(tracks(&second), tracks(&third));
+        first.sequence(seq).unwrap().check().unwrap();
     }
 
     /// Opening a project written before graphic layers had uids assigns stable, unique identities

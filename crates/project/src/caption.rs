@@ -443,12 +443,20 @@ impl CaptionTrack {
     pub fn sort(&mut self) {
         self.captions.sort_by_key(|c| c.start);
     }
-    /// Invariant check: captions sorted, positive duration, no overlaps.
+    /// Invariant check: captions sorted, positive duration, no overlaps; word timings in order
+    /// and inside their caption.
     pub fn check(&self) -> Result<(), String> {
         self.check_bounds()?;
         for c in &self.captions {
             if c.duration.0 <= 0 {
                 return Err(format!("{}: caption {:?} has non-positive duration", self.name, c.id));
+            }
+            let mut previous_end = Tick::ZERO;
+            for word in &c.words {
+                if word.start < previous_end || word.end < word.start || word.end > c.duration {
+                    return Err(format!("{}: caption {:?} has unordered or out-of-range word timings", self.name, c.id));
+                }
+                previous_end = word.end;
             }
         }
         for w in self.captions.windows(2) {
@@ -463,6 +471,10 @@ impl CaptionTrack {
         for c in &self.captions {
             if !crate::bounded_time_range(c.start, c.duration) {
                 return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
+            }
+            // (order and range are editor invariants, repaired on load: see `check`)
+            if c.words.iter().any(|w| !crate::bounded_time_range(w.start, Tick::ZERO) || !crate::bounded_time_range(w.end, Tick::ZERO)) {
+                return Err(format!("{}: caption {:?} has word timings outside supported time bounds", self.name, c.id));
             }
         }
         Ok(())
@@ -694,6 +706,29 @@ mod tests {
         c.clamp_words();
         assert_eq!(c.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["hello"]);
         assert_eq!(c.text, "hello");
+    }
+
+    /// Review fix: word order and range are editor invariants (`check`), not load-time bounds, so a
+    /// project an earlier build wrote with a slightly late word still opens.
+    #[test]
+    fn word_order_is_an_editor_invariant_not_a_load_bound() {
+        let mut track = CaptionTrack::new(TrackId(1), "Live".into(), CaptionFormat::Subtitle);
+        track.captions.push(timed("x y", 100, &[("x", 0, 60), ("y", 50, 101)]));
+        assert!(track.check_bounds().is_ok());
+        assert!(track.check().is_err());
+        track.captions[0].words[0].start = Tick(i64::MIN);
+        assert!(track.check_bounds().is_err(), "an offset past the time bounds is still refused");
+    }
+
+    #[test]
+    fn caption_tracks_reject_corrupt_word_offsets_without_panicking() {
+        for words in [vec![("x", i64::MIN, 5)], vec![("x", 0, i64::MAX)], vec![("x", 5, 1)], vec![("x", 0, 20), ("y", 10, 30)]] {
+            let mut track = CaptionTrack::new(TrackId(1), "Live".into(), CaptionFormat::Subtitle);
+            track.captions.push(timed("x", 100, &words));
+            let result = std::panic::catch_unwind(|| track.check());
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_err());
+        }
     }
 
     #[test]
