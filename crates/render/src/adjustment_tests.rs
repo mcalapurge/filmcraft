@@ -103,6 +103,21 @@ fn applies_to_everything_below_but_not_above() {
 }
 
 #[test]
+fn disabled_adjustment_layers_do_not_change_gpu_plans() {
+    let mut s = scene(2);
+    let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    place(&mut s.p, s.seq, 0, red);
+    let adj = adjustment(&mut s.p, s.seq, 1);
+    fx(&mut s, adj, "invert");
+    clip(&mut s, adj).enabled = false;
+    let plan = plan::plan_frame(&s.p, s.seq, R.tick_of(12), RenderOptions::default(), &s.map);
+    let actual = plan::execute_cpu(&plan);
+    let expected = render(&s);
+    assert!(near(expected.get(160, 90), [1.0, 0.0, 0.0], 1e-4));
+    assert_eq!(actual.get(160, 90), expected.get(160, 90), "disabled adjustment must be bypassed on both paths");
+}
+
+#[test]
 fn opacity_and_blend_mode_mix_over_the_original() {
     let mut s = scene(2);
     let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
