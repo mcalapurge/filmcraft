@@ -313,10 +313,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
-  nested sequences (except a plain one, whose own layers go into the plan: same frame size and
-  colour settings as its parent, nothing on the clip that changes the picture, every layer inside
-  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
+  placed like any layer. A plain nested sequence (same colour settings as its parent, nothing on
+  the clip that changes the picture, every layer inside blended normally) puts its own layers into
+  the plan. A nested sequence whose effects are all in the GPU set (Lumetri Color on a nest, say)
+  is a `PlanStep::Nest`: the GPU composites the nest's own layers into a picture at the size the
+  CPU renders it, runs the effects on that picture and places it with the nest's Motion, opacity
+  and blend mode (any mode but those that read the destination). Other standard effects, effect
+  and opacity masks, adjustment layers, other nested sequences and non-dissolve transitions are
+  rendered on the CPU for that layer or frame
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.

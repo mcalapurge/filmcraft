@@ -6,10 +6,13 @@
 //! clip whose enabled standard effects all have a GPU implementation ([`crate::gpufx`]) carries
 //! them as a [`LayerFx`]: their parameters evaluated at the frame's time, run by the GPU on the
 //! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
-//! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
-//! layers, nested sequences, transitions other than dissolves, dips and Push — is rendered on the CPU
-//! for that layer (or the whole frame) and handed over as a pre-composited image, so the GPU path
-//! is always exact with respect to the CPU reference.
+//! blend). A nested sequence contributes its own layers when it is only shown, and is a
+//! [`PlanStep::Nest`] when its effects all have a GPU implementation (its layers composited into a
+//! picture of its own, the effects run on that, the picture placed). Anything the shaders don't
+//! cover yet — other standard effects, masks, adjustment layers, other nested sequences,
+//! transitions other than dissolves, dips and Push — is rendered on the CPU for that layer (or the
+//! whole frame) and handed over as a pre-composited image, so the GPU path is always exact with
+//! respect to the CPU reference.
 //!
 //! A Push transition is planned as ordered [`PlanStep`] operations on isolated clip inputs: each
 //! side is drawn into its own image, the two are pushed together, and the result is composited (Normal) over
@@ -96,6 +99,18 @@ pub enum PlanStep {
         progress: f32,
         scale: f32,
     },
+    /// A nested sequence with standard effects: its `layers` are composited into a picture of
+    /// its own of `size` (transparent black first), `ops` run on that picture, and it is placed
+    /// over the canvas with `matrix` (picture pixels to output pixels), `opacity` and `blend`, as
+    /// [`crate::item_layer`] renders a nest, runs its effects and places it on the CPU.
+    Nest {
+        layers: Vec<PlanLayer>,
+        size: (u32, u32),
+        ops: Vec<FxOp>,
+        matrix: Affine,
+        opacity: f32,
+        blend: Blend,
+    },
 }
 
 #[derive(Default)]
@@ -137,6 +152,20 @@ impl PlanStack {
         self.steps.push(PlanStep::Transition { inputs, effect, progress, scale });
     }
 
+    /// Push a [`PlanStep::Nest`].
+    fn push_nest(&mut self, step: PlanStep) {
+        let added = match &step {
+            PlanStep::Nest { layers, .. } => layers.len(),
+            _ => 0,
+        };
+        if self.exhausted || self.layer_count().saturating_add(added) > MAX_PLAN_LAYERS {
+            self.exhausted = true;
+            return;
+        }
+        self.layers = self.layers.saturating_add(added);
+        self.steps.push(step);
+    }
+
     fn into_layers(self, width: usize, height: usize) -> Option<Vec<PlanLayer>> {
         if self.exhausted {
             return None;
@@ -171,7 +200,7 @@ impl FramePlan {
                 .iter()
                 .map(|s| match s {
                     PlanStep::Effects(_) => 0,
-                    PlanStep::Layers(ls) => layers(ls),
+                    PlanStep::Layers(ls) | PlanStep::Nest { layers: ls, .. } => layers(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layers(ls)).sum(),
                 })
                 .sum(),
@@ -190,6 +219,7 @@ impl FramePlan {
                     PlanStep::Effects(_) => 0,
                     PlanStep::Layers(ls) => layer_side(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layer_side(ls)).max().unwrap_or(0),
+                    PlanStep::Nest { layers, size, .. } => layer_side(layers).max(size.0.max(size.1) as usize),
                 })
                 .fold((*width).max(*height), usize::max),
         }
@@ -212,6 +242,12 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
     if !is_media || item.has_opacity_masks() {
         return None;
     }
+    gpu_effects(item, opts)
+}
+
+/// The enabled standard effects of `item` if every one is unmasked and has a GPU implementation
+/// (empty with effects off). None: the GPU cannot run them.
+fn gpu_effects(item: &TrackItem, opts: RenderOptions) -> Option<Vec<&filmcraft_project::EffectInstance>> {
     if !opts.effects {
         return Some(Vec::new());
     }
@@ -483,11 +519,31 @@ fn push_item(
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
         && nest_is_plain(project, seq, nested, ft)
-        && let Some(layers) = nest_layers(project, seq, item, nested, ft, mt, opts, sources, nest)
+        && let Some(steps) = nest_layers(project, seq, item, nested, ft, mt, opts, sources, nest)
     {
-        for l in layers {
-            out.push(l);
+        for step in steps {
+            match step {
+                PlanStep::Layers(layers) => layers.into_iter().for_each(|l| out.push(l)),
+                nested_step => out.push_nest(nested_step),
+            }
         }
+        return;
+    }
+    // A nested sequence with standard effects the GPU runs (Lumetri Color, …): its layers are
+    // composited into a picture of its own, the effects run on it and Motion places it, all on the
+    // GPU, instead of the CPU rendering the nested sequence and its effects every frame.
+    if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && nest < crate::MAX_NEST_DEPTH
+        && item.multicam_angle(nested).is_none()
+        && opts.effects
+        && item.has_standard_effects()
+        && !item.has_opacity_masks()
+        && !bl.reads_destination()
+        && nested.settings.color == seq.settings.color
+        && layered_at(project, nested, ft)
+        && let Some(step) = nest_step(project, seq, item, nested, t, ft, mt, opts, sources, nest, op * extra_opacity, bl)
+    {
+        out.push_nest(step);
         return;
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
@@ -602,9 +658,10 @@ fn push_item(
 }
 
 /// The layers of a plain nested sequence ([`nest_is_plain`]) at its time `ft`, with its captions,
-/// placed in the output of `seq` by the nest's Motion. None when they cannot stand in for the
-/// nest's picture: the plan of the nest needs more than layers, or a layer reaches outside the
-/// nested frame (rendered as a picture, the nest crops it there).
+/// placed in the output of `seq` by the nest's Motion: [`PlanStep::Layers`] and the
+/// [`PlanStep::Nest`]s of the nests with effects inside it. None when they cannot stand in for the
+/// nest's picture: the plan of the nest needs other steps, or a layer reaches outside the nested
+/// frame (rendered as a picture, the nest crops it there).
 #[allow(clippy::too_many_arguments)]
 fn nest_layers(
     project: &Project,
@@ -616,7 +673,7 @@ fn nest_layers(
     opts: RenderOptions,
     sources: &dyn SourceProvider,
     nest: u32,
-) -> Option<Vec<PlanLayer>> {
+) -> Option<Vec<PlanStep>> {
     let (w, h) = output_size(nested, opts.scale);
     let mut inner = PlanStack::default();
     push_tracks(project, nested, ft, opts, sources, nest + 1, &mut inner);
@@ -626,29 +683,99 @@ fn nest_layers(
     if inner.exhausted {
         return None;
     }
-    let FramePlan::Layers { layers, .. } = inner.finish(w, h) else { return None };
+    let steps = match inner.finish(w, h) {
+        FramePlan::Layers { layers, .. } => vec![PlanStep::Layers(layers)],
+        FramePlan::Composite { steps, .. } if steps.iter().all(|s| matches!(s, PlanStep::Layers(_) | PlanStep::Nest { .. })) => steps,
+        _ => return None,
+    };
     // Half a pixel of slack: a layer that exactly fills the nest lands on its edges.
-    let inside = |l: &PlanLayer| {
-        let (lw, lh) = l.size();
+    let inside = |(lw, lh): (u32, u32), m: &Affine| {
         [(0.0, 0.0), (lw as f64, 0.0), (0.0, lh as f64), (lw as f64, lh as f64)].into_iter().all(|(x, y)| {
-            let p = l.matrix.apply(filmcraft_geom::Vec2::new(x, y));
+            let p = m.apply(filmcraft_geom::Vec2::new(x, y));
             p.x >= -0.5 && p.y >= -0.5 && p.x <= w as f64 + 0.5 && p.y <= h as f64 + 0.5
         })
     };
-    if !layers.iter().all(inside) {
+    let all_inside = steps.iter().all(|s| match s {
+        PlanStep::Layers(layers) => layers.iter().all(|l| inside(l.size(), &l.matrix)),
+        PlanStep::Nest { size, matrix, .. } => inside(*size, matrix),
+        _ => false,
+    });
+    if !all_inside {
         return None;
     }
     // nested output pixels (at the render scale) → this sequence's output pixels
     let motion = motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt);
     if near_identity(&motion) {
-        return Some(layers);
+        return Some(steps);
     }
     let s = f64::from(opts.scale);
     if s <= 0.0 {
         return None;
     }
     let place = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
-    Some(layers.into_iter().map(|l| PlanLayer { matrix: place.then_apply(&l.matrix), ..l }).collect())
+    Some(
+        steps
+            .into_iter()
+            .map(|step| match step {
+                PlanStep::Layers(layers) => PlanStep::Layers(layers.into_iter().map(|l| PlanLayer { matrix: place.then_apply(&l.matrix), ..l }).collect()),
+                PlanStep::Nest { layers, size, ops, matrix, opacity, blend } => {
+                    PlanStep::Nest { layers, size, ops, matrix: place.then_apply(&matrix), opacity, blend }
+                }
+                other => other,
+            })
+            .collect(),
+    )
+}
+
+/// The [`PlanStep::Nest`] of a nested sequence clip with standard effects at timeline `t` (its
+/// time `ft` in the nested sequence, effect time `mt`), drawn with `opacity` and `blend`. It
+/// mirrors [`crate::item_layer`]: the nest's picture at the size Motion needs, its effects
+/// evaluated for that picture, the same placement. None when an effect has no GPU
+/// implementation or is masked.
+#[allow(clippy::too_many_arguments)]
+fn nest_step(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    nested: &Sequence,
+    t: Tick,
+    ft: Tick,
+    mt: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+    nest: u32,
+    opacity: f32,
+    blend: Blend,
+) -> Option<PlanStep> {
+    let chain = gpu_effects(item, opts)?;
+    let size = crate::source_size(project, item.item)?;
+    let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
+    let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
+    let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
+    let (nw, nh) = output_size(nested, want);
+    let mut inner = PlanStack::default();
+    push_tracks(project, nested, ft, RenderOptions { scale: want, ..opts }, sources, nest + 1, &mut inner);
+    // a nested sequence's captions are part of its picture (see `crate::base_layer`)
+    for o in crate::caption_overlays(nested, ft, nw, nh) {
+        inner.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)), Affine::translate(o.x as f64, o.y as f64), 1.0, Blend::Normal));
+    }
+    let layers = inner.into_layers(nw, nh)?;
+    let px_scale = nw as f32 / size.0.max(1) as f32;
+    let cx = crate::effects::FxCtx {
+        t: mt,
+        px_scale,
+        seconds: (t - item.start).seconds(),
+        timecode: "",
+        clip_name: &item.name,
+        project: Some(project),
+        env: None,
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        working: seq.settings.color.working,
+    };
+    let ops = chain.iter().map(|e| FxOp::eval(e, &cx, nw, nh).filter(FxOp::gpu_ok)).collect::<Option<Vec<_>>>()?;
+    let matrix =
+        Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+    Some(PlanStep::Nest { layers, size: (nw as u32, nh as u32), ops, matrix, opacity, blend })
 }
 
 fn near_identity(m: &Affine) -> bool {
@@ -692,6 +819,15 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                         });
                         let mixed = crate::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
                         crate::blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
+                    }
+                    PlanStep::Nest { layers, size, ops, matrix, opacity, blend } => {
+                        let mut picture = crate::Image::new(size.0 as usize, size.1 as usize);
+                        execute_layers(&mut picture, layers);
+                        for op in ops {
+                            op.apply(&mut picture);
+                        }
+                        let placed = picture.transformed(*width, *height, matrix);
+                        crate::blend::composite(&mut canvas, &placed, *opacity, *blend);
                     }
                 }
             }

@@ -718,6 +718,104 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
     }
 }
 
+/// A nested sequence with effects ([`PlanStep::Nest`]) drawn 1:1 is the same picture as one
+/// layer running those effects: the nest's own canvas adds no resampling or offset.
+#[test]
+fn unscaled_nest_matches_a_layer_with_the_same_effects() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (67u32, 41u32);
+    let frame = Arc::new(VideoFrame::rgba_f32(w, h, picture(w, h)));
+    let e = effect("lumetri", &[("selective_red_hue", fl(50.0)), ("wheel_midtones_l", fl(15.0)), ("vignette_amount", fl(-2.0))]);
+    let ops = vec![FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap()];
+    let layer = FramePlan::Layers {
+        width: w as usize,
+        height: h as usize,
+        layers: vec![PlanLayer {
+            fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: ops.clone() })),
+            ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal)
+        }],
+    };
+    let nest = FramePlan::Composite {
+        width: w as usize,
+        height: h as usize,
+        steps: vec![filmcraft_render::plan::PlanStep::Nest {
+            layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)],
+            size: (w, h),
+            ops,
+            matrix: Affine::IDENTITY,
+            opacity: 1.0,
+            blend: Blend::Normal,
+        }],
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&layer);
+    let want = super::blend_tests::read_accum(&c);
+    c.composite(&nest);
+    let got = super::blend_tests::read_accum(&c);
+    let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst <= 2e-3, "max difference {worst}");
+    let cpu = execute_cpu(&nest).px;
+    let (worst, flips) = compare(&cpu, &got);
+    assert!(worst < 0.01 && flips == 0.0, "against the CPU: worst {worst}, flips {flips}");
+}
+
+/// A nest moved, scaled and rotated over a background, with layers of its own (one with effects,
+/// one in a blend mode) and its effects: the GPU matches the CPU plan executor.
+#[test]
+fn nest_steps_match_cpu_plan() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (320usize, 180usize);
+    let (nw, nh) = (200u32, 150u32);
+    let lumetri = effect("lumetri", &[("exposure", fl(0.5)), ("saturation", fl(140.0)), ("wheel_shadows_l", fl(10.0))]);
+    let blur = effect("gaussian_blur", &[("blurriness", fl(4.0))]);
+    let nest_ops: Vec<FxOp> = [&lumetri, &blur].iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 1.0), nw as usize, nh as usize)).collect();
+    let tint = [effect("tint", &[("amount", fl(60.0))])];
+    let inner_ops: Vec<FxOp> = tint.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 0.5), 200, 150)).collect();
+    let inner = vec![
+        PlanLayer {
+            fx: Some(Arc::new(LayerFx { size: (200, 150), decimation: 2, ops: inner_ops })),
+            ..PlanLayer::new(yuv_frame(400, 300), Affine::IDENTITY, 1.0, Blend::Normal)
+        },
+        PlanLayer::new(ramp_layer(120, 80, 1), Affine::motion(Vec2::new(110.0, 70.0), Vec2::new(0.8, 0.8), 12.0, Vec2::new(60.0, 40.0)), 0.9, Blend::Screen),
+    ];
+    let matrix = Affine::motion(Vec2::new(165.0, 92.0), Vec2::new(0.7, 0.7), -7.0, Vec2::new(100.0, 75.0));
+    let background = PlanLayer::new(yuv_frame(320, 180), Affine::IDENTITY, 1.0, Blend::Normal);
+    let plan = FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![
+            filmcraft_render::plan::PlanStep::Layers(vec![background.clone()]),
+            filmcraft_render::plan::PlanStep::Nest { layers: inner.clone(), size: (nw, nh), ops: nest_ops, matrix, opacity: 0.85, blend: Blend::Normal },
+            filmcraft_render::plan::PlanStep::Layers(vec![PlanLayer::new(ramp_layer(60, 40, 0), Affine::translate(240.0, 120.0), 0.6, Blend::Normal)]),
+        ],
+    };
+    // compared away from every outline: the layers', placed through the nest, and the nest's own
+    let outline =
+        |lw: u32, lh: u32, m: Affine| PlanLayer::new(Arc::new(VideoFrame::rgba_f32(lw, lh, vec![0.0; (lw * lh * 4) as usize])), m, 1.0, Blend::Normal);
+    let mut outlines = vec![background, outline(nw, nh, matrix), outline(60, 40, Affine::translate(240.0, 120.0))];
+    outlines.extend(inner.iter().map(|l| outline(l.size().0, l.size().1, matrix.then_apply(&l.matrix))));
+    let keep = interior(&FramePlan::Layers { width: w, height: h, layers: outlines });
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
+    eprintln!("nest: interior 8-bit p99 {p99} mean {mean:.3} max {max}");
+    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
+    // without an effect stage the frame is rendered on the CPU: the same picture
+    c.fx = None;
+    c.composite(&plan);
+    let (_, _, fallback) = c.read_output().expect("readback");
+    let (p99, mean, _) = stats8(&cpu, &fallback, &vec![true; w * h]);
+    assert!(p99 <= 1 && mean < 0.5, "CPU fallback: p99 {p99}, mean {mean}");
+}
+
 /// The half-float upload is lossless for this input, so a 1:1 effect source draw must be too.
 /// Odd dimensions expose interpolation drift that can invent opacity before any effect runs.
 #[test]

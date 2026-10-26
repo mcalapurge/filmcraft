@@ -90,6 +90,12 @@ pub struct GpuCompositor {
     fx: Option<fx::FxStage>,
     transition: transition::PushStage,
     transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
+    /// The picture of a nested sequence with effects ([`PlanStep::Nest`]), drawn apart from the
+    /// accumulator (allocated on first use).
+    nest_canvas: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    /// A [`FramePlan::Composite`] is being drawn: its steps share one frame of the effect stage's
+    /// texture pool, so the working textures of one step are not released by the next.
+    in_steps: bool,
     pub gpu_transitions: u64,
     pub cpu_transitions: u64,
     /// Total bytes uploaded (stats).
@@ -263,7 +269,7 @@ pub fn prepare(plan: &FramePlan) -> PreparedPlan {
                 .iter()
                 .flat_map(|s| match s {
                     PlanStep::Effects(_) => Vec::new(),
-                    PlanStep::Layers(layers) => vec![prepare_layers(layers)],
+                    PlanStep::Layers(layers) | PlanStep::Nest { layers, .. } => vec![prepare_layers(layers)],
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| prepare_layers(ls)).collect(),
                 })
                 .collect(),
@@ -431,6 +437,8 @@ impl GpuCompositor {
             fx,
             transition: transition::PushStage::new(device),
             transition_inputs: [None, None],
+            nest_canvas: None,
+            in_steps: false,
             gpu_transitions: 0,
             cpu_transitions: 0,
             uploaded_bytes: 0,
@@ -745,7 +753,8 @@ impl GpuCompositor {
         } else {
             None
         };
-        let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        // (a picture drawn for a later step, unresolved, leaves the output texture as it is)
+        let out_view = resolve.then(|| Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC));
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
         let max_side = self.device.limits().max_texture_dimension_2d;
@@ -777,7 +786,7 @@ impl GpuCompositor {
         let mut bind_groups = Vec::with_capacity(layers.len());
         // the effect stage of each layer with effects (recorded right before its draw)
         let mut jobs: Vec<Option<fx::FxJob>> = Vec::with_capacity(layers.len());
-        if let Some(f) = self.fx.as_mut() {
+        if let Some(f) = self.fx.as_mut().filter(|_| !self.in_steps) {
             f.begin_frame();
         }
         for (l, k) in layers.iter().zip(&keys) {
@@ -862,7 +871,7 @@ impl GpuCompositor {
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("layer"), layout, entries: &entries });
             bind_groups.push((bg, region));
         }
-        if let Some(f) = self.fx.as_mut() {
+        if let Some(f) = self.fx.as_mut().filter(|_| !self.in_steps) {
             f.end_frame();
         }
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -916,11 +925,11 @@ impl GpuCompositor {
             }
             i = end;
         }
-        if resolve {
+        if let Some(out_view) = &out_view {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("resolve"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &out_view,
+                    view: out_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
@@ -935,12 +944,27 @@ impl GpuCompositor {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        (if resolve { out_view } else { accum_view }, (w, h))
+        (out_view.unwrap_or(accum_view), (w, h))
     }
 
     fn composite_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
-        if (self.fx.is_none() && steps.iter().any(|s| matches!(s, PlanStep::Effects(_))))
+        if let Some(f) = self.fx.as_mut() {
+            f.begin_frame();
+        }
+        self.in_steps = true;
+        let out = self.draw_steps(width, height, steps, prep);
+        self.in_steps = false;
+        if let Some(f) = self.fx.as_mut() {
+            f.end_frame();
+        }
+        out
+    }
+
+    fn draw_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
+        let max_side = self.device.limits().max_texture_dimension_2d;
+        if (self.fx.is_none() && steps.iter().any(|s| matches!(s, PlanStep::Effects(_) | PlanStep::Nest { .. })))
             || steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"))
+            || steps.iter().any(|s| matches!(s, PlanStep::Nest { size, .. } if size.0.max(size.1) > max_side))
         {
             self.cpu_transitions += 1;
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
@@ -974,9 +998,91 @@ impl GpuCompositor {
                     self.transition.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress);
                     self.gpu_transitions += 1;
                 }
+                PlanStep::Nest { layers, size, ops, matrix, opacity, blend } => {
+                    let p = children.as_mut().and_then(Iterator::next);
+                    if !self.draw_nest(layers, *size, ops, matrix, *opacity, *blend, p, dims) {
+                        let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
+                        return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, true);
+                    }
+                }
             }
         }
         self.render_plan(&empty, None, false, true)
+    }
+
+    /// Draw a [`PlanStep::Nest`] over the accumulator (of `dims`): its layers composited into a
+    /// picture of their own, its effects run on that picture, the result placed. False when the
+    /// effect stage cannot run them (the caller then renders the frame on the CPU).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_nest(
+        &mut self,
+        layers: &[PlanLayer],
+        size: (u32, u32),
+        ops: &[filmcraft_render::gpufx::FxOp],
+        matrix: &filmcraft_geom::Affine,
+        opacity: f32,
+        blend: Blend,
+        prep: Option<&PreparedPlan>,
+        dims: (u32, u32),
+    ) -> bool {
+        let size = (size.0.max(1), size.1.max(1));
+        // The accumulator under the nest is kept: the picture is drawn into a canvas of its own.
+        std::mem::swap(&mut self.accum, &mut self.nest_canvas);
+        let (picture, _) = self.render_plan(&FramePlan::Layers { width: size.0 as usize, height: size.1 as usize, layers: layers.to_vec() }, prep, true, false);
+        std::mem::swap(&mut self.accum, &mut self.nest_canvas);
+        let Some((_, canvas, _)) = &self.accum else {
+            return false;
+        };
+        let canvas = canvas.clone();
+        // the picture is linear premultiplied RGBA, as the accumulator holds it
+        let linear = |size| SrcInfo {
+            kind: 1,
+            code_scale: 1.0,
+            code_levels: 1.0,
+            alpha: 0.0,
+            chroma: size,
+            size,
+            color: filmcraft_color::ColorInfo::REC709,
+            input: None,
+        };
+        let mut su = Self::uniforms(&linear(size), &filmcraft_geom::Affine::IDENTITY, 1.0, Blend::Normal, size);
+        // (effect sources use the working pixel center, as a layer's do)
+        su[26] = 1.0;
+        let sbuf = self.uniform_buffer(&su);
+        let u = Self::uniforms(&linear(size), matrix, opacity, blend, dims);
+        let buf = self.uniform_buffer(&u);
+        let bind = |device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniforms: &wgpu::Buffer, view: &wgpu::TextureView, dummy: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nest"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dummy) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(dummy) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(dummy) },
+                ],
+            })
+        };
+        let source = bind(&self.device, &self.layer_bgl, &sbuf, &picture, &self.dummy);
+        let Some(stage) = self.fx.as_mut() else {
+            return false;
+        };
+        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, ops: ops.to_vec() };
+        let Some(job) = stage.job(&self.device, &self.queue, &fx, source, &self.dummy) else {
+            return false;
+        };
+        let placed = bind(&self.device, &self.layer_bgl, &buf, &job.result, &self.dummy);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("nest") });
+        stage.record(&mut enc, &job);
+        {
+            let mut pass = accum_pass(&mut enc, &canvas, wgpu::LoadOp::Load);
+            pass.set_pipeline(&self.layer_pipeline);
+            pass.set_bind_group(0, &placed, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        true
     }
 
     /// Run full-canvas effects without reading pixels back to the CPU.
