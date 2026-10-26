@@ -34,8 +34,8 @@ fn has_word_captions(s: &Session) -> std::result::Result<(), String> {
 fn rules(p: &Value) -> tx::LiveCaptionRules {
     let d = tx::LiveCaptionRules::default();
     tx::LiveCaptionRules {
-        max_words: u64_p(p, "maxWords").map(|n| (n as usize).clamp(1, MAX_WORDS)).unwrap_or(d.max_words),
-        max_chars: u64_p(p, "maxChars").map(|n| (n as usize).clamp(1, 200)).unwrap_or(d.max_chars),
+        max_words: u64_p(p, "maxWords").map(|n| n.clamp(1, MAX_WORDS as u64) as usize).unwrap_or(d.max_words),
+        max_chars: u64_p(p, "maxChars").map(|n| n.clamp(1, 200) as usize).unwrap_or(d.max_chars),
         ..d
     }
 }
@@ -136,7 +136,7 @@ fn create_live(s: &mut Session, p: &Value) -> Result<Value> {
 fn set_word(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "captions.setWord";
     let id = p.get("caption").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad(CMD, "need `caption`"))?;
-    let index = u64_p(p, "index").ok_or_else(|| bad(CMD, "need `index`"))? as usize;
+    let index = u64_p(p, "index").and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(CMD, "need a supported word `index`"))?;
     let text = str_p(p, "text").map(str::to_string);
     let tick = |k: &str| p.get(k).and_then(Value::as_i64).map(Tick);
     let (start, end) = (tick("start"), tick("end"));
