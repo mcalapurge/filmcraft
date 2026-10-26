@@ -79,8 +79,8 @@ impl Transcript {
     /// The speaker name of `word` (`"Speaker 2"` when the label list is short; `None` when the word
     /// has no speaker).
     pub fn speaker_name(&self, word: &Word) -> Option<String> {
-        let i = word.speaker? as usize;
-        Some(self.speakers.get(i).map(|s| s.name.clone()).unwrap_or_else(|| format!("Speaker {}", i + 1)))
+        let id = word.speaker?;
+        Some(self.speakers.get(id as usize).map(|s| s.name.clone()).unwrap_or_else(|| format!("Speaker {}", u64::from(id) + 1)))
     }
 
     /// The text of all words joined by spaces.
@@ -115,10 +115,29 @@ impl Transcript {
             }
         }
         let max = self.words.iter().filter_map(|w| w.speaker).max();
-        if let Some(m) = max {
+        if let Some(m) = max.filter(|m| *m < 4096) {
             while self.speakers.len() <= m as usize {
                 let n = self.speakers.len() + 1;
                 self.speakers.push(Speaker { name: format!("Speaker {n}") });
+            }
+        } else if max.is_some() {
+            // A hostile speaker index must not allocate billions of placeholder labels.
+            // Compact missing indices by identity, keeping their displayed names. Work and
+            // added storage now depend on the words present, never the largest input number.
+            let original_speakers = self.speakers.len();
+            let mut missing = std::collections::BTreeMap::new();
+            for word in &mut self.words {
+                let Some(id) = word.speaker.filter(|id| *id as usize >= original_speakers) else { continue };
+                let index = match missing.get(&id) {
+                    Some(index) => *index,
+                    None => {
+                        let Ok(index) = u32::try_from(self.speakers.len()) else { continue };
+                        self.speakers.push(Speaker { name: format!("Speaker {}", u64::from(id) + 1) });
+                        missing.insert(id, index);
+                        index
+                    }
+                };
+                word.speaker = Some(index);
             }
         }
     }
@@ -161,6 +180,27 @@ mod tests {
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
         t.check().unwrap();
+    }
+
+    #[test]
+    fn hostile_speaker_indices_do_not_size_allocations() {
+        let result = std::panic::catch_unwind(|| {
+            let mut transcript = Transcript::default();
+            for (i, speaker) in [u32::MAX, 0, u32::MAX - 1, u32::MAX].into_iter().enumerate() {
+                let mut word = w("hello", i as i64 * 10, i as i64 * 10 + 5);
+                word.speaker = Some(speaker);
+                transcript.words.push(word);
+            }
+            assert_eq!(transcript.speaker_name(&transcript.words[0]).as_deref(), Some("Speaker 4294967296"));
+            transcript.normalize();
+            transcript.check().unwrap();
+            assert_eq!(transcript.speakers.len(), 3);
+            assert_eq!(transcript.words[0].speaker, transcript.words[3].speaker);
+            assert_ne!(transcript.words[0].speaker, transcript.words[1].speaker);
+            assert_eq!(transcript.speaker_name(&transcript.words[0]).as_deref(), Some("Speaker 4294967296"));
+            assert_eq!(transcript.speaker_name(&transcript.words[1]).as_deref(), Some("Speaker 1"));
+        });
+        assert!(result.is_ok());
     }
 
     #[test]
