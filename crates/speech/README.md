@@ -26,3 +26,6 @@ Implemented from the published description of the model: A. Radford et al., "Rob
 Recognition via Large-Scale Weak Supervision" (OpenAI, 2022), the model cards and configuration
 files published with the weights (`config.json`, `generation_config.json`, `tokenizer.json`), and
 the candle tensor library's public API. Weights: OpenAI Whisper, MIT licence.
+
+The native source guard against `std::time::Instant` retains `PathBuf` values and matches
+path components, so the same guard runs on Windows, macOS and Linux.

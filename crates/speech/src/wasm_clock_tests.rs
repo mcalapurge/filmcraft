@@ -3,10 +3,10 @@
 //! `web_time::Instant` is `std::time::Instant` on native targets and `performance.now()` on the
 //! web, so there is never a reason to name the std one in this crate.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Every non-test source file of the crate, as (path, contents).
-fn sources() -> Vec<(String, String)> {
+fn sources() -> Vec<(PathBuf, String)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = Vec::new();
     let mut stack = vec![dir];
@@ -21,10 +21,11 @@ fn sources() -> Vec<(String, String)> {
             if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
                 continue;
             }
-            out.push((p.display().to_string(), std::fs::read_to_string(&p).unwrap()));
+            let text = std::fs::read_to_string(&p).unwrap();
+            out.push((p, text));
         }
     }
-    assert!(out.iter().any(|(p, _)| p.ends_with("whisper/mod.rs")), "found {} source files", out.len());
+    assert!(out.iter().any(|(p, _)| p.ends_with(Path::new("whisper").join("mod.rs"))), "found {} source files", out.len());
     out
 }
 
@@ -36,7 +37,7 @@ fn no_std_instant_in_code_the_web_build_runs() {
             // `use std::time::{.., Instant, ..}` or a fully qualified `std::time::Instant`
             let names_std_instant = line.contains("std::time::Instant") || (line.contains("use std::time::") && line.contains("Instant"));
             if names_std_instant && !line.contains("web_time") && !line.trim_start().starts_with("//") {
-                hits.push(format!("{path}:{}: {}", i + 1, line.trim()));
+                hits.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
         }
     }
