@@ -135,6 +135,19 @@ local gates. Fixes are committed in `3ae77200`. The feature acceptance matrix an
 the tested macOS/Chrome scope, subject to normal remote CI and maintainer review. The original
 branch is preserved; no merge, push, release or publication is performed by this review.
 
+## Follow-up verification
+
+A second review reproduced the gates, then found five problems: fixes above that were incomplete or caused
+regressions. Each is now fixed and has a regression test that failed before its fix:
+
+| Issue | Fix and regression test |
+|---|---|
+| A popped long word was still cut off at the overlay's own edge (the earlier test only checked the frame bounds) | Overlay sized for the active word's measured growth. `a_popped_word_is_drawn_whole_not_cut_off_by_its_overlay` |
+| Word-order validation in `check_bounds` made projects with a slightly late word fail to open, contrary to the load policy | Order/range moved to `CaptionTrack::check`; load repairs words with `clamp_words`; only the time bounds remain a load error. `misplaced_caption_words_are_repaired_on_open`, `word_order_is_an_editor_invariant_not_a_load_bound` |
+| The renderer wrapped lines narrower than `line_fill` assumed, so word groups counted as one line drew on two | Shared `line_reserve` for both. `line_fill_agrees_with_the_drawn_line_count` |
+| Each left-aligned line was indented by its own first word's pop room | One shift for the whole caption, only to keep it inside the frame. `left_aligned_live_captions_keep_one_left_edge` |
+| `clamp_words` rewrote caption text (markup, line breaks) on every trim | Text rewritten only when a word is dropped. `clamping_words_that_still_fit_keeps_the_written_text` |
+
 ## Practical limits
 
 Local execution is on Apple Silicon macOS and Chrome/WebGPU. WASM compilation checks the browser

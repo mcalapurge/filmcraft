@@ -99,10 +99,13 @@ and landscape video. `burn::line_fill` measures how much of the line a set of wo
 included for a popped word or a box); the engine uses it to decide how many words a live caption
 holds and to find captions that no longer fit.
 
-Fitting reserves the largest highlighted word, outline and box before aligning each line, so a
-long word stays visible even at 2× pop and with left or right alignment. Caption edits keep the
-plain text used by sidecar exports synchronized with surviving word timings; trimming all timed
-words leaves empty text rather than restoring the old sentence. Inserts, overwrites and frame-rate
+Fitting reserves the largest highlighted word, outline and box when wrapping lines (`line_fill`
+uses the same reserve, so a group it passes draws on one line), and the overlay is sized for the
+popped word, so a long word stays whole even at 2× pop. A popped word may reach into the side
+margin; the caption moves, all lines together, only when one would leave the frame, so left- or
+right-aligned lines share one edge. Caption edits that drop timed words rewrite the plain text used
+by sidecar exports from the surviving words (empty when none is left, rather than restoring the old
+sentence); otherwise the written text and its markup are kept. Inserts, overwrites and frame-rate
 conforms preserve the remaining words' sequence times (words after an inserted gap move with it).
 
 Text is set in the track's font (**Inter**, `assets/fonts/Inter-*.ttf`, SIL OFL 1.1, attributed in

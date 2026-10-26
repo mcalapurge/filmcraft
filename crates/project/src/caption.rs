@@ -313,12 +313,14 @@ impl Caption {
     }
 
     /// Keep the words inside the caption, in order and not overlapping; a word wholly outside it
-    /// is dropped. Keep the plain text in sync, including when every timed word was removed.
+    /// is dropped. Dropping a word rewrites the plain text from the words left (empty when none
+    /// is), so sidecars match what is drawn; otherwise the text, with its markup, is kept.
     pub fn clamp_words(&mut self) {
         if self.words.is_empty() {
             return;
         }
         let dur = self.duration.max(Tick::ZERO);
+        let before = self.words.len();
         self.words.retain(|w| w.end > Tick::ZERO && w.start < dur && !w.text.trim().is_empty());
         let mut prev = Tick::ZERO;
         for w in &mut self.words {
@@ -326,7 +328,9 @@ impl Caption {
             w.end = w.end.clamp(w.start, dur);
             prev = w.end;
         }
-        self.text = self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        if self.words.len() != before {
+            self.text = self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        }
     }
 
     /// The text of a word-timed caption changed: time the words of the new text. The same number
@@ -435,12 +439,20 @@ impl CaptionTrack {
     pub fn sort(&mut self) {
         self.captions.sort_by_key(|c| c.start);
     }
-    /// Invariant check: captions sorted, positive duration, no overlaps.
+    /// Invariant check: captions sorted, positive duration, no overlaps; word timings in order
+    /// and inside their caption.
     pub fn check(&self) -> Result<(), String> {
         self.check_bounds()?;
         for c in &self.captions {
             if c.duration.0 <= 0 {
                 return Err(format!("{}: caption {:?} has non-positive duration", self.name, c.id));
+            }
+            let mut previous_end = Tick::ZERO;
+            for word in &c.words {
+                if word.start < previous_end || word.end < word.start || word.end > c.duration {
+                    return Err(format!("{}: caption {:?} has unordered or out-of-range word timings", self.name, c.id));
+                }
+                previous_end = word.end;
             }
         }
         for w in self.captions.windows(2) {
@@ -456,12 +468,9 @@ impl CaptionTrack {
             if !crate::bounded_time_range(c.start, c.duration) {
                 return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
             }
-            let mut previous_end = Tick::ZERO;
-            for word in &c.words {
-                if word.start < previous_end || word.end < word.start || word.end > c.duration {
-                    return Err(format!("{}: caption {:?} has unordered or out-of-range word timings", self.name, c.id));
-                }
-                previous_end = word.end;
+            // (order and range are editor invariants, repaired on load: see `check`)
+            if c.words.iter().any(|w| !crate::bounded_time_range(w.start, Tick::ZERO) || !crate::bounded_time_range(w.end, Tick::ZERO)) {
+                return Err(format!("{}: caption {:?} has word timings outside supported time bounds", self.name, c.id));
             }
         }
         Ok(())
@@ -656,6 +665,30 @@ mod tests {
         c.shift_words(Tick(i64::MAX));
         assert!(spread_words(&["x".into()], Tick(i64::MAX), Tick(i64::MIN)).iter().all(|w| w.start == w.end));
         assert!(spread_words(&[], Tick(0), Tick(10)).is_empty());
+    }
+
+    /// Review fix: clamping words that all still fit keeps the caption's own text (its markup and
+    /// line breaks go to sidecar exports); only dropping a word rewrites it.
+    #[test]
+    fn clamping_words_that_still_fit_keeps_the_written_text() {
+        let mut c = timed("<i>one</i>\ntwo", 100, &[("one", 0, 40), ("two", 50, 90)]);
+        c.clamp_words();
+        assert_eq!(c.text, "<i>one</i>\ntwo");
+        c.duration = Tick(45);
+        c.clamp_words();
+        assert_eq!(c.text, "one", "a dropped word leaves the text");
+    }
+
+    /// Review fix: word order and range are editor invariants (`check`), not load-time bounds, so a
+    /// project an earlier build wrote with a slightly late word still opens.
+    #[test]
+    fn word_order_is_an_editor_invariant_not_a_load_bound() {
+        let mut track = CaptionTrack::new(TrackId(1), "Live".into(), CaptionFormat::Subtitle);
+        track.captions.push(timed("x y", 100, &[("x", 0, 60), ("y", 50, 101)]));
+        assert!(track.check_bounds().is_ok());
+        assert!(track.check().is_err());
+        track.captions[0].words[0].start = Tick(i64::MIN);
+        assert!(track.check_bounds().is_err(), "an offset past the time bounds is still refused");
     }
 
     #[test]

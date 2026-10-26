@@ -187,8 +187,25 @@ fn word_gap(style: &CaptionStyle, ts: &TextStyle, widest: f32) -> f32 {
     // a highlight box reaches past its word; keep it off the neighbours (the same for every
     // word, so the line does not shift as the box moves)
     let box_pad = if style.highlight == WordHighlight::Box { (ts.size * 0.3).round() * 0.6 } else { 0.0 };
-    let pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(1.0, 2.0) };
-    space + box_pad + widest * (pop - 1.0) / 2.0
+    space + box_pad + widest * (fit_pop(style) - 1.0) / 2.0
+}
+
+/// The largest a spoken word grows: layout keeps room for it (a shrinking pop needs none).
+fn fit_pop(style: &CaptionStyle) -> f32 {
+    if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(1.0, 2.0) }
+}
+
+/// The outline radius in frame pixels.
+fn outline_px(style: &CaptionStyle, scale: f32) -> f32 {
+    (finite(style.outline, 0.0) * scale).clamp(0.0, MAX_OUTLINE_RADIUS)
+}
+
+/// Room a word-timed line keeps past its words at `px`: the widest word popped, a highlight box
+/// and the outline at both ends. [`line_fill`] and the renderer's line wrapping both use it, so a
+/// group of words `line_fill` passes draws on one line.
+fn line_reserve(style: &CaptionStyle, px: f32, widest: f32, outline: f32) -> f32 {
+    let box_pad = if style.highlight == WordHighlight::Box { px * 0.6 } else { 0.0 };
+    widest * (fit_pop(style) - 1.0) + box_pad + 2.0 * outline
 }
 
 /// How wide `words` draw on one line as a word-timed caption in a `w`×`h` frame, as a fraction of
@@ -199,12 +216,13 @@ pub fn line_fill(style: &CaptionStyle, w: usize, h: usize, words: &[&str]) -> f3
     if w == 0 || h == 0 || words.is_empty() {
         return 0.0;
     }
-    let ts = caption_style(&style.font, &style.font_style, caption_px(style, w, h));
+    let px = caption_px(style, w, h);
+    let ts = caption_style(&style.font, &style.font_style, px);
     let caps = |s: &str| if style.uppercase { s.to_uppercase() } else { s.to_string() };
     let widths: Vec<f32> = words.iter().map(|wd| filmcraft_text::measure(&caps(wd.trim()), &ts)).collect();
     let widest = widths.iter().copied().fold(0.0, f32::max);
-    let pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) };
-    let total = widths.iter().sum::<f32>() + word_gap(style, &ts, widest) * (widths.len() - 1) as f32 + widest * (pop - 1.0).max(0.0);
+    let outline = outline_px(style, style_scale(style, w, h));
+    let total = widths.iter().sum::<f32>() + word_gap(style, &ts, widest) * (widths.len() - 1) as f32 + line_reserve(style, px, widest, outline);
     total / (w as f32 * 0.9)
 }
 
@@ -229,8 +247,8 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
     let words: Vec<String> = c.words.iter().map(|wd| caps(wd.text.trim())).collect();
     // Keep layout independent of the active word, including the space its largest pop or
     // highlight box can occupy. A long word must fit when highlighted as well as at rest.
-    let fit_pop = if style.highlight == WordHighlight::Off { 1.0 } else { finite(style.highlight_scale, 1.0).clamp(1.0, 2.0) };
-    let outline = (finite(style.outline, 0.0) * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+    let fit_pop = fit_pop(style);
+    let outline = outline_px(style, scale);
     let mut px = caption_px(style, w, h);
     if timed {
         // a word too wide for the frame shrinks the caption until it fits, instead of being cut
@@ -248,8 +266,7 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
     let widest = words.iter().map(|wd| filmcraft_text::measure(wd, &ts)).fold(0.0, f32::max);
     // (text, word index, width) per line
     let rows: Vec<Vec<(String, Option<usize>, f32)>> = if timed {
-        let box_pad = if style.highlight == WordHighlight::Box { px * 0.6 } else { 0.0 };
-        let wrap_width = (max_w - widest * (fit_pop - 1.0) - box_pad - 2.0 * outline).max(4.0);
+        let wrap_width = (max_w - line_reserve(style, px, widest, outline)).max(4.0);
         wrap_words(&words, &ts, word_gap(style, &ts, widest), wrap_width)
             .into_iter()
             .map(|l| l.into_iter().map(|(t, i, lw)| (t, Some(i), lw)).collect())
@@ -297,23 +314,37 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
             toks.push(Token { text, word, x, w: tw });
             x += tw + space;
         }
-        if timed {
-            let extra = |tok: &Token| tok.w * (fit_pop - 1.0) / 2.0 + outline + if style.highlight == WordHighlight::Box { pad_x * 0.6 } else { 0.0 };
-            let lo = toks.iter().map(|tok| tok.x - extra(tok)).fold(f32::MAX, f32::min);
-            let hi = toks.iter().map(|tok| tok.x + tok.w + extra(tok)).fold(f32::MIN, f32::max);
-            let shift = (side - lo).max(0.0) - (hi - (w as f32 - side)).max(0.0);
-            for tok in &mut toks {
-                tok.x += shift;
-            }
-        }
         widths.push(lw);
         lines.push(toks);
     }
+    if timed {
+        // A popped word or its box may reach into the side margin, as a resting line's outline
+        // does; move the whole caption only when one would leave the frame. One shift for every
+        // line keeps a left- or right-aligned caption's lines on one edge.
+        let edge = 2.0;
+        let extra = |tok: &Token| tok.w * (fit_pop - 1.0) / 2.0 + outline + if style.highlight == WordHighlight::Box { pad_x * 0.6 } else { 0.0 };
+        let lo = lines.iter().flatten().map(|tok| tok.x - extra(tok)).fold(f32::MAX, f32::min);
+        let hi = lines.iter().flatten().map(|tok| tok.x + tok.w + extra(tok)).fold(f32::MIN, f32::max);
+        let shift = (edge - lo).max(0.0) - (hi - (w as f32 - edge)).max(0.0);
+        for tok in lines.iter_mut().flatten() {
+            tok.x += shift;
+        }
+    }
     let xs: Vec<f32> = lines.iter().map(|l| l.first().map(|t| t.x).unwrap_or(0.0)).collect();
     let pop = if active.is_some() && style.highlight != WordHighlight::Off { finite(style.highlight_scale, 1.0).clamp(0.5, 2.0) } else { 1.0 };
+    let big = TextStyle { size: px * pop, ..ts.clone() };
     let grow = outline.ceil() + 1.0 + (px * (pop - 1.0).max(0.0)).ceil() + if style.highlight == WordHighlight::Box { pad_x } else { 0.0 };
-    let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
-    let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
+    // A popped word grows by half its extra width on each side, which for a long word is far
+    // more than `px * (pop - 1)`: size the overlay for it so it is not cut off at its edge.
+    let popped = lines
+        .iter()
+        .flatten()
+        .filter(|tok| active.is_some() && tok.word == active)
+        .map(|tok| ((filmcraft_text::measure(&tok.text, &big) - tok.w) / 2.0).max(0.0))
+        .fold(0.0, f32::max);
+    let grow_x = grow + popped.ceil();
+    let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow_x).fold(f32::MAX, f32::min).floor();
+    let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow_x).fold(f32::MIN, f32::max).ceil();
     let by0 = (top - grow).floor();
     let by1 = (top + block_h + grow).ceil();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
@@ -332,7 +363,6 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
     let mut cover_hi = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
     let mut hbox = vec![0.0f32; ow * oh];
-    let big = TextStyle { size: px * pop, ..ts.clone() };
     for (i, line) in lines.iter().enumerate() {
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
@@ -775,5 +805,66 @@ mod tests {
         assert!(line_fill(&pop, 1080, 1920, &words) > v);
         assert_eq!(line_fill(&st, 0, 0, &words), 0.0);
         assert_eq!(line_fill(&st, 1080, 1920, &[]), 0.0);
+    }
+
+    /// Review fix: the overlay is sized for the popped word, not just the resting line. A popped
+    /// word that the layout made room for must not be cut off at the overlay's own edge.
+    #[test]
+    fn a_popped_word_is_drawn_whole_not_cut_off_by_its_overlay() {
+        let long = "Pneumonoultramicroscopicsilicovolcanoconiosis";
+        for (name, scale, text) in [("Pop", 1.18, long), ("Pop", 2.0, long), ("Pop", 1.5, "HELLO WORLD"), ("Box", 2.0, "CAPTIONS ARE GREAT")] {
+            let mut st = CaptionStyle::preset(name).unwrap();
+            st.highlight_scale = scale;
+            let c = live_text(text);
+            for (i, w) in c.words.iter().enumerate() {
+                let o = render_caption_at(&c, &st, 1080, 1920, Some(w.start)).unwrap();
+                let edge = (0..o.h).flat_map(|y| [y * o.w, y * o.w + o.w - 1]).map(|j| o.px[j * 4 + 3]).fold(0.0f32, f32::max);
+                assert!(edge < 0.01, "{name} ×{scale} {text:?} word {i}: ink reaches the overlay edge (alpha {edge})");
+            }
+            // the popped word is as wide as the resting one times the scale
+            let mut flat = st.clone();
+            flat.outline = 0.0;
+            let solo = live_text(c.words.last().unwrap().text.as_str());
+            let span = |o: &Overlay| ink_span(o).1 - ink_span(o).0 + 1;
+            let rest = span(&render_caption_at(&solo, &flat, 1080, 1920, None).unwrap()) as f32;
+            let popped = span(&render_caption_at(&solo, &flat, 1080, 1920, Some(Tick::ZERO)).unwrap()) as f32;
+            assert!(popped >= rest * scale * 0.95, "{name} ×{scale} {text:?}: popped word drew {popped}px of ~{}", rest * scale);
+        }
+    }
+
+    /// Review fix: `line_fill` decides how many words a live caption holds; a group it says fits on
+    /// one line must draw on one line, and one it says does not must wrap.
+    #[test]
+    fn line_fill_agrees_with_the_drawn_line_count() {
+        let pool =
+            ["SO", "THIS", "IS", "WHAT", "WE", "CALL", "A", "LIVE", "CAPTION", "TEST", "AND", "IT", "KEEPS", "GOING", "ON", "FOR", "QUITE", "AWHILE", "NOW"];
+        for name in ["Classic", "Pop", "Box", "Karaoke"] {
+            let st = CaptionStyle::preset(name).unwrap();
+            let one = render_caption_at(&live_text("SO"), &st, 1080, 1920, None).unwrap().h;
+            for a in 0..pool.len() {
+                for b in a + 2..=pool.len() {
+                    let words = &pool[a..b];
+                    let fill = line_fill(&st, 1080, 1920, words);
+                    let drawn = render_caption_at(&live_text(&words.join(" ")), &st, 1080, 1920, None).unwrap();
+                    let wraps = drawn.h > one + one / 2;
+                    assert_eq!(fill > 1.0, wraps, "{name} {words:?}: line_fill {fill} but drawn on {} line(s)", if wraps { "2+" } else { "1" });
+                }
+            }
+        }
+    }
+
+    /// Review fix: room for a popped word must not indent each left-aligned line by its own first
+    /// word, so consecutive captions keep one left edge.
+    #[test]
+    fn left_aligned_live_captions_keep_one_left_edge() {
+        let mut st = CaptionStyle::preset("Pop").unwrap();
+        st.align = CaptionAlign::Left;
+        let start = |text: &str| ink_span(&render_caption_at(&live_text(text), &st, 1080, 1920, None).unwrap()).0;
+        // every line starts with an I, so only the layout (not a glyph's side bearing) can differ
+        let short = start("I I");
+        for text in ["IMPRESSIVE I", "INTERNATIONALLY I"] {
+            let long = start(text);
+            assert!((short - long).abs() <= 1, "{text:?}: left edge {long}, a short caption's is {short}");
+        }
     }
 }
