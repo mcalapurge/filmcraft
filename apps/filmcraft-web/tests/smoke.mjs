@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkImportBins } from "./import-bins.mjs";
 import { checkImportCollision } from "./import-collision.mjs";
+import { checkSpeechWorker } from "./speech-worker.mjs";
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -164,6 +165,9 @@ try {
   await sleep(500);
   await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   report.steps.modes = { screenshot: await shot("05-modes") };
+  if (arg("speech-media")) {
+    report.steps.speech = await checkSpeechWorker({ evaluate: js, until, media: arg("speech-media") });
+  }
   report.steps.importBins = await checkImportBins({evaluate: js, media});
   if (!report.steps.importBins.ok) throw new Error("import bin regression: " + JSON.stringify(report.steps.importBins.gates));
   report.steps.importCollision = await checkImportCollision({
