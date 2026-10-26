@@ -26,12 +26,14 @@ TEXTS = {
 
 def synth(word, tmp):
     aiff = os.path.join(tmp, "w.aiff")
-    subprocess.run(["say", "-o", aiff, word], check=True)
-    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", aiff, "-ar", str(SR), "-ac", "1", "-f", "f32le", "-"], check=True, capture_output=True).stdout
+    subprocess.run(["say", "-o", aiff, word], check=True, timeout=30)
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", aiff, "-ar", str(SR), "-ac", "1", "-f", "f32le", "-"], check=True, capture_output=True, timeout=30).stdout
     x = struct.unpack("<%df" % (len(raw) // 4), raw)
     fr = SR // 100
     db = [10 * math.log10(sum(v * v for v in x[i:i + fr]) / fr + 1e-12) for i in range(0, len(x), fr)]
     voiced = [i for i, d in enumerate(db) if d > -45]
+    if not voiced:
+        raise RuntimeError(f"speech synthesis produced no voiced samples for {word!r}")
     return list(x[voiced[0] * fr:(voiced[-1] + 1) * fr])
 
 
