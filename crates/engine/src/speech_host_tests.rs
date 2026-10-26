@@ -316,3 +316,20 @@ fn transcription_followups_cannot_edit_a_different_active_sequence() {
     assert!(s.project.sequence(original).unwrap().caption_tracks.is_empty());
     assert!(toasts(&mut s).iter().any(|(m, _)| m.contains("follow-up") && m.contains("sequence")));
 }
+
+#[test]
+fn a_host_must_return_exactly_one_transcript_per_requested_clip() {
+    let (mut s, host, item) = session();
+    let id = s.execute("transcript.generate", json!({"items": [item.0]})).unwrap()["job"].as_u64().unwrap();
+    poll_until_started(&mut s, &host, id);
+    host.complete(id);
+    *host.jobs.lock().unwrap()[0].transcripts.lock().unwrap() = Some(Vec::new());
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    s.poll_persistence();
+    assert!(Arc::ptr_eq(&s.project, &before));
+    assert_eq!(s.history.undo.len(), undo);
+    let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+    assert!(job.result.lock().unwrap().as_ref().unwrap().is_err());
+    assert!(toasts(&mut s).iter().any(|(m, e)| m.contains("transcript") && *e));
+}

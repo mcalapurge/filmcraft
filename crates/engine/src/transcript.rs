@@ -503,6 +503,12 @@ pub fn poll(s: &mut Session) {
         let transcripts = lock(&pj.transcripts).take();
         match (outcome, transcripts) {
             (Some(Ok(_)), Some(ts)) if !pj.reads.is_empty() => {
+                if ts.len() != pj.reads.len() || pj.reads.iter().any(|r| media_item(s, r.item) != Some(r.item)) {
+                    let error = "the speech host returned incomplete transcripts or their media was removed; nothing was changed".to_string();
+                    finish(&job.progress, &job.result, Err(error.clone()));
+                    s.error_toast("transcript.generate", error);
+                    continue;
+                }
                 let done: Vec<(ItemId, Transcript)> = pj
                     .reads
                     .iter()
@@ -535,6 +541,11 @@ pub fn poll(s: &mut Session) {
             (Some(Ok(_)), _) if pj.reads.is_empty() && pj.skipped.is_empty() => s.toast(format!("Downloaded {}", pj.model.name)),
             (Some(Err(e)), _) if e == "stopped" => {}
             (Some(Err(e)), _) => s.error_toast("transcript.generate", format!("Transcribe: {e}")),
+            (Some(Ok(_)), _) => {
+                let error = "the speech host returned no transcripts; nothing was changed".to_string();
+                finish(&job.progress, &job.result, Err(error.clone()));
+                s.error_toast("transcript.generate", error);
+            }
             _ => {}
         }
     }
