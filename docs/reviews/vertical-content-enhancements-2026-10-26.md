@@ -137,7 +137,7 @@ branch is preserved; no merge, push, release or publication is performed by this
 
 ## Follow-up verification
 
-A second review reproduced the gates, then found five problems: fixes above that were incomplete or caused
+A second review reproduced the gates, then found five problems (and a later review a sixth): fixes above that were incomplete or caused
 regressions. Each is now fixed and has a regression test that failed before its fix:
 
 | Issue | Fix and regression test |
@@ -147,6 +147,7 @@ regressions. Each is now fixed and has a regression test that failed before its 
 | The renderer wrapped lines narrower than `line_fill` assumed, so word groups counted as one line drew on two | Shared `line_reserve` for both. `line_fill_agrees_with_the_drawn_line_count` |
 | Each left-aligned line was indented by its own first word's pop room | One shift for the whole caption, only to keep it inside the frame. `left_aligned_live_captions_keep_one_left_edge` |
 | `clamp_words` rewrote caption text (markup, line breaks) on every trim | Text rewritten only when a word is dropped. `clamping_words_that_still_fit_keeps_the_written_text` |
+| Load-time repair was not stable: a word clamped to zero length at the caption's end survived one open and was dropped on the next, rewriting the text | `clamp_words` drops such a word in the same pass, so a second pass changes nothing. `clamping_words_twice_changes_nothing`, `caption_word_repair_is_stable_across_reopens` |
 
 ## Practical limits
 

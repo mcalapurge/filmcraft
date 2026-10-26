@@ -328,6 +328,10 @@ impl Caption {
             w.end = w.end.clamp(w.start, dur);
             prev = w.end;
         }
+        // A word pushed to the end by the one before it has no time left: drop it now, as the
+        // next pass would (`start < dur` above), so a second clamp changes nothing. Every later
+        // word was pushed there too, so the words kept are unchanged.
+        self.words.retain(|w| w.start < dur);
         if self.words.len() != before {
             self.text = self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
         }
@@ -677,6 +681,31 @@ mod tests {
         c.duration = Tick(45);
         c.clamp_words();
         assert_eq!(c.text, "one", "a dropped word leaves the text");
+    }
+
+    /// Clamping is a fixed point: a second pass (the next open, the next edit) changes nothing. A
+    /// word pushed to the caption's end by the word before it has no time left and is dropped
+    /// at once, not kept at zero length and dropped on the next pass.
+    #[test]
+    fn clamping_words_twice_changes_nothing() {
+        let cases: [&[(&str, i64, i64)]; 5] = [
+            &[("hello", 0, 100), ("world", 50, 90)],
+            &[("a", 0, 60), ("b", 50, 101)],
+            &[("a", -10, 5), ("b", 5, 5), ("c", 90, 200), ("d", 95, 99)],
+            &[("a", 0, 100), ("b", 100, 100)],
+            &[("a", i64::MIN, i64::MAX), ("b", 0, 1)],
+        ];
+        for words in cases {
+            let mut once = timed("t", 100, words);
+            once.clamp_words();
+            let mut twice = once.clone();
+            twice.clamp_words();
+            assert_eq!(once, twice, "{words:?}");
+        }
+        let mut c = timed("hello world", 100, &[("hello", 0, 100), ("world", 50, 90)]);
+        c.clamp_words();
+        assert_eq!(c.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["hello"]);
+        assert_eq!(c.text, "hello");
     }
 
     /// Review fix: word order and range are editor invariants (`check`), not load-time bounds, so a

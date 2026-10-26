@@ -488,6 +488,36 @@ mod tests {
         assert_eq!(c.text, "hello there world");
     }
 
+    /// Repairing caption words on open is stable: saving the repaired project and opening it again
+    /// changes nothing (a word squeezed to the caption's end is not dropped one open later).
+    #[test]
+    fn caption_word_repair_is_stable_across_reopens() {
+        use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, CaptionWord, ClipId, SequenceSettings, TrackId};
+        use filmcraft_time::Tick;
+        let mut p = Project::new("Live");
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
+        let word = |text: &str, a, b| CaptionWord { text: text.into(), start: Tick(a), end: Tick(b) };
+        let mut track = CaptionTrack::new(TrackId(900), "Live".into(), CaptionFormat::Subtitle);
+        track.captions.push(Caption {
+            id: ClipId(901),
+            start: Tick(0),
+            duration: Tick(100),
+            text: "hello world".into(),
+            speaker: None,
+            cue_id: None,
+            settings: String::new(),
+            words: vec![word("hello", 0, 100), word("world", 50, 90)],
+        });
+        p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+        let first = decode(&encode(&p, false)).unwrap().project;
+        let second = decode(&encode(&first, false)).unwrap().project;
+        let third = decode(&encode(&second, false)).unwrap().project;
+        let tracks = |q: &Project| q.sequence(seq).unwrap().caption_tracks.clone();
+        assert_eq!(tracks(&first), tracks(&second), "the second open changed the repaired captions");
+        assert_eq!(tracks(&second), tracks(&third));
+        first.sequence(seq).unwrap().check().unwrap();
+    }
+
     /// Opening a project written before graphic layers had uids assigns stable, unique identities
     /// without a schema upgrade. The old file still opens, and its two byte-identical layers (same
     /// geometry, different text) can no longer be confused after a reorder.
