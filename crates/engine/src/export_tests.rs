@@ -93,6 +93,31 @@ fn queueing_several_sequences_into_a_folder_keeps_every_file() {
     assert_eq!(paths, ["Cut.wav", "Cut_2.wav", "Promo.wav"]);
 }
 
+#[test]
+fn queue_batches_reserve_paths_already_waiting_for_export() {
+    let mut s = demo();
+    let id = s.state.active_sequence.unwrap().0;
+    let dir = format!("{}/", std::env::temp_dir().join("fc-queue-reserved").display());
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"sequences": [id, id], "format": "wav", "path": dir})).unwrap();
+    }
+    let paths: std::collections::HashSet<_> = s.export_queue.items.iter().map(|i| i.settings.path.clone()).collect();
+    assert_eq!(paths.len(), 4, "later queue batches must not overwrite earlier queued outputs");
+}
+
+#[test]
+fn queue_batch_parameters_are_validated_before_mutating_the_queue() {
+    let mut s = demo();
+    let id = s.state.active_sequence.unwrap().0;
+    for params in [json!({"sequences": [id, "invalid"], "format": "wav"}), json!({"sequences": vec![id; 101], "ranges": vec!["entire"; 100], "format": "wav"})]
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("export.queue.add", params)));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
+        assert!(s.export_queue.items.is_empty());
+    }
+}
+
 /// #1544: an export started without `wait` says where it can be followed: `jobs.list` (not
 /// `export.queue.list`, which lists the Export Queue only) and `jobs.cancel` to stop it.
 #[test]

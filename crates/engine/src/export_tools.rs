@@ -759,9 +759,15 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
 
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
+    const MAX_BATCH: usize = 10_000;
     let (preset, settings) = settings_from_params(s, p, cmd)?;
-    let seqs: Vec<ItemId> = match p.get("sequences").and_then(Value::as_array) {
-        Some(a) => a.iter().filter_map(Value::as_u64).map(ItemId).collect(),
+    let seqs: Vec<ItemId> = match p.get("sequences").filter(|v| !v.is_null()) {
+        Some(v) => v
+            .as_array()
+            .ok_or_else(|| bad(cmd, "`sequences` must be a list of sequence ids"))?
+            .iter()
+            .map(|v| v.as_u64().map(ItemId).ok_or_else(|| bad(cmd, "every entry in `sequences` must be a sequence id")))
+            .collect::<Result<_>>()?,
         None => vec![sequence_param(s, p, cmd)?],
     };
     if seqs.is_empty() {
@@ -777,10 +783,17 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         _ => vec![p.get("range")],
     };
     let project = s.project.clone();
-    let many = seqs.len() * ranges.len() > 1;
+    let count = seqs.len().checked_mul(ranges.len()).filter(|n| *n <= MAX_BATCH).ok_or_else(|| bad(cmd, "queue at most 10000 exports at once"))?;
+    s.export_queue.next_id.checked_add(count as u64).ok_or_else(|| bad(cmd, "the export queue has exhausted its ids"))?;
+    let many = count > 1;
     let mut ids = Vec::new();
     let mut n = 0usize;
     let mut items = Vec::new();
+    // Reserve paths across batches too: a second Queue All must not overwrite items still
+    // waiting in the queue. Case-fold on platforms with case-insensitive default filesystems.
+    let path_key = |path: &str| if cfg!(any(target_os = "macos", target_os = "windows")) { path.to_lowercase() } else { path.to_string() };
+    let mut reserved: std::collections::HashSet<String> =
+        s.export_queue.items.iter().filter(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding)).map(|i| path_key(&i.settings.path)).collect();
     for &seq in &seqs {
         for r in &ranges {
             let mut st = settings.clone();
@@ -794,7 +807,10 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             st.path = output_path(s, p, seq, &st, suffix);
             // sequences of the same name into one folder: number the later ones, not overwrite
             let mut k = 1usize;
-            while items.iter().any(|(_, o): &(ItemId, ExportSettings)| o.path == st.path) && k < 10_000 {
+            while !reserved.insert(path_key(&st.path)) {
+                if k >= MAX_BATCH {
+                    return Err(bad(cmd, "could not find a unique export filename; choose another folder or filename"));
+                }
                 st.path = output_path(s, p, seq, &st, Some(k));
                 k += 1;
             }
