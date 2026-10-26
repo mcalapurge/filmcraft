@@ -160,7 +160,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.auto.add("liveCaptions.track", picker, "Caption track");
     egui::Popup::menu(&presp).show(|ui| {
         for (i, other) in seq.caption_tracks.iter().enumerate() {
-            if ui.selectable_label(i == ti, format!("C{} · {}", i + 1, other.name)).clicked() {
+            let option = ui.selectable_label(i == ti, format!("C{} · {}", i + 1, other.name));
+            app.auto.add(&format!("liveCaptions.track.{}", other.id.0), option.rect, &other.name);
+            if option.clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(TRACK_KEY), other.id.0));
             }
         }
