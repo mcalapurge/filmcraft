@@ -2293,12 +2293,27 @@ fn build() -> Vec<CommandSpec> {
             "Sequence Settings…",
             ["Sequence"],
             None,
-            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"par":[u32,u32]?,"scaleMotion":bool=false}"#,
             has_seq,
             |s, p| {
                 const CMD: &str = "sequence.settings";
                 let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
                 let fps = fps_p(p, CMD)?;
+                // pixel aspect ratio `[width, height]` of one pixel; swapping a sequence's
+                // orientation inverts it, so anamorphic 4:3 pixels on their side become 3:4
+                let par = match p.get("par").filter(|v| !v.is_null()) {
+                    Some(v) => {
+                        let pair = v.as_array().filter(|a| a.len() == 2).and_then(|a| {
+                            let n = |i: usize| a.get(i).and_then(Value::as_u64).and_then(|x| u32::try_from(x).ok());
+                            Some((n(0)?, n(1)?))
+                        });
+                        Some(
+                            pair.and_then(filmcraft_project::checked_par)
+                                .ok_or_else(|| bad(CMD, "`par` must be [width, height] of a pixel, e.g. [1, 1] or [4, 3]"))?,
+                        )
+                    }
+                    None => None,
+                };
                 let mix = match str_p(p, "mix") {
                     Some(m) => Some(crate::mixer::channels_from(m).ok_or_else(|| bad(CMD, format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?),
                     None => None,
@@ -2335,6 +2350,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     if let Some(h) = checked_u32_p(&p, "height", CMD)? {
                         q.settings.height = h;
+                    }
+                    if let Some(par) = par {
+                        q.settings.par = par;
                     }
                     let old_rate = q.settings.frame_rate;
                     if let Some(f) = fps {

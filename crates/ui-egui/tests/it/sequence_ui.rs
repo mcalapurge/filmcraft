@@ -708,6 +708,45 @@ fn sequence_settings_dialog_renames_the_sequence() {
     assert_eq!(d.app().session.history.undo.len(), history);
 }
 
+/// Swap Orientation trades the frame width and height in the dialog's fields (1920 x 1080 becomes
+/// 1080 x 1920, 16:9 becomes 9:16) before OK; clicking it twice is a no-op; OK applies the swap in
+/// one undo step. Non-square pixels turn on their side with the frame (4:3 pixels become 3:4).
+#[test]
+fn sequence_settings_dialog_swaps_orientation() {
+    let mut d = Driver::demo();
+    let before = (*d.app().session.project).clone();
+    let history = d.app().session.history.undo.len();
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    d.click("sequenceSettings.swapOrientation");
+    assert_eq!((d.label("sequenceSettings.width"), d.label("sequenceSettings.height")), ("1080".into(), "1920".into()));
+    assert_eq!(d.label("sequenceSettings.aspect"), "9:16");
+    d.snapshot("sequence-settings-swapped", "sequenceSettings.");
+    // nothing applies before OK
+    assert_eq!(*d.app().session.project, before);
+    d.click("sequenceSettings.swapOrientation");
+    assert_eq!((d.label("sequenceSettings.width"), d.label("sequenceSettings.height")), ("1920".into(), "1080".into()));
+    d.click("sequenceSettings.swapOrientation");
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    let st = d.app().session.active_sequence().unwrap().settings.clone();
+    assert_eq!((st.width, st.height, st.par), (1080, 1920, (1, 1)));
+    assert_eq!(d.app().session.history.undo.len(), history + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, before);
+    // anamorphic: 1440 x 1080 at 4:3 (16:9 on screen) swaps to 1080 x 1440 at 3:4 (9:16)
+    d.exec("sequence.settings", json!({"width": 1440, "height": 1080, "par": [4, 3]}));
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    assert_eq!(d.label("sequenceSettings.aspect"), "16:9");
+    d.click("sequenceSettings.swapOrientation");
+    assert_eq!(d.label("sequenceSettings.aspect"), "9:16");
+    assert_eq!(d.label("sequenceSettings.par"), "Custom (0.7500)");
+    d.click("sequenceSettings.ok");
+    let st = d.app().session.active_sequence().unwrap().settings.clone();
+    assert_eq!((st.width, st.height, st.par), (1080, 1440, (3, 4)));
+}
+
 /// File ▸ New ▸ Sequence… (Cmd+N) made a default sequence at once; it opens New Sequence: the
 /// Sequence Settings dialog from the default settings, named like the command would name it, with
 /// a Tracks tab. OK makes the sequence with what was chosen (one undo step); Cancel makes none.

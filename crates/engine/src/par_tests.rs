@@ -229,3 +229,35 @@ fn ffmpeg_anamorphic_files_fill_a_square_frame_and_make_anamorphic_sequences() {
         assert!(c.iter().all(|a| *a > 0.99), "{}: {c:?}", file.display());
     }
 }
+
+#[test]
+fn sequence_settings_swaps_orientation_and_inverts_the_pixel_aspect() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Shorts", "width": 1080, "height": 1920, "fps": 30})).unwrap();
+    let id = s.state.active_sequence.unwrap();
+    let history = s.history.undo.len();
+    // vertical to horizontal: one command, one undo step
+    s.execute("sequence.settings", json!({"width": 1920, "height": 1080, "scaleMotion": true})).unwrap();
+    let st = &s.project.sequence(id).unwrap().settings;
+    assert_eq!((st.width, st.height, st.par), (1920, 1080, (1, 1)));
+    assert_eq!(s.history.undo.len(), history + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    let st = &s.project.sequence(id).unwrap().settings;
+    assert_eq!((st.width, st.height), (1080, 1920));
+    // anamorphic pixels on their side: 1440 x 1080 at 4:3 (16:9) becomes 1080 x 1440 at 3:4 (9:16)
+    s.execute("sequence.settings", json!({"width": 1440, "height": 1080, "par": [4, 3]})).unwrap();
+    s.execute("sequence.settings", json!({"width": 1080, "height": 1440, "par": [3, 4]})).unwrap();
+    let st = s.project.sequence(id).unwrap().settings.clone();
+    assert_eq!((st.width, st.height, st.par), (1080, 1440, (3, 4)));
+    assert!(st.validate().is_ok());
+    let shown = filmcraft_project::conformed_size((st.width, st.height), st.par, (1, 1));
+    assert_eq!((shown.0.round(), shown.1.round()), (810.0, 1440.0), "9:16 on screen");
+    // ratios are reduced; hostile ones are refused without a change
+    s.execute("sequence.settings", json!({"par": [8, 6]})).unwrap();
+    assert_eq!(s.project.sequence(id).unwrap().settings.par, (4, 3));
+    let before = (*s.project).clone();
+    for par in [json!([0, 1]), json!([1, 0]), json!([1000, 1]), json!([1]), json!([1, 2, 3]), json!("4:3"), json!([-1, 1]), json!([u64::MAX, 1])] {
+        assert!(s.execute("sequence.settings", json!({"par": par})).is_err(), "{par}");
+        assert_eq!(*s.project, before);
+    }
+}
