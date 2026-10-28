@@ -699,6 +699,7 @@ fn hot(
     nv
 }
 
+#[expect(clippy::too_many_arguments, reason = "one call per caption colour, each with its own automation id and style key")]
 fn color_button(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
@@ -744,15 +745,16 @@ fn text_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, tr: &CaptionTrack, action
             app.auto.add("liveCaptions.font", r.response.rect, "Caption font");
         });
         prop_row(ui, tl!("Weight"), &t, |ui| {
-            let r = craft_ui::ComboBox::from_id_salt(("live-cap-weight", tr.id.0)).selected_text(crate::i18n::t(&st.font_style)).width(110.0).show_ui(ui, |ui| {
-                for w in ["Regular", "Medium", "SemiBold", "Bold"] {
-                    let resp = ui.selectable_label(st.font_style.eq_ignore_ascii_case(w), crate::i18n::t(w));
-                    app.auto.add(&format!("liveCaptions.weight.{w}"), resp.rect, w);
-                    if resp.clicked() {
-                        style_cmd(actions, tr, "fontStyle", json!(w));
+            let r =
+                craft_ui::ComboBox::from_id_salt(("live-cap-weight", tr.id.0)).selected_text(crate::i18n::t(&st.font_style)).width(110.0).show_ui(ui, |ui| {
+                    for w in ["Regular", "Medium", "SemiBold", "Bold"] {
+                        let resp = ui.selectable_label(st.font_style.eq_ignore_ascii_case(w), crate::i18n::t(w));
+                        app.auto.add(&format!("liveCaptions.weight.{w}"), resp.rect, w);
+                        if resp.clicked() {
+                            style_cmd(actions, tr, "fontStyle", json!(w));
+                        }
                     }
-                }
-            });
+                });
             app.auto.add("liveCaptions.weight", r.response.rect, "Font weight");
         });
         prop_row(ui, tl!("Size"), &t, |ui| {

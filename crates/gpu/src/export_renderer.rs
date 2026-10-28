@@ -194,7 +194,7 @@ mod tests {
             p.add_item(
                 &info.name.clone(),
                 Label::Iris,
-                ItemKind::Media(MediaClip {
+                ItemKind::Media(Box::new(MediaClip {
                     media: MediaRef::Generator(g.generator.clone()),
                     info,
                     interpret: Default::default(),
@@ -204,7 +204,7 @@ mod tests {
                     offline: false,
                     proxy: None,
                     identity: None,
-                }),
+                })),
                 None,
             )
         };

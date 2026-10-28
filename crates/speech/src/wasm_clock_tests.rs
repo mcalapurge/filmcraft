@@ -25,7 +25,7 @@ fn sources() -> Vec<(PathBuf, String)> {
             out.push((p, text));
         }
     }
-    assert!(out.iter().any(|(p, _)| p.ends_with(Path::new("whisper").join("mod.rs"))), "found {} source files", out.len());
+    assert!(out.iter().any(|(p, _)| p.ends_with("whisper.rs")), "found {} source files", out.len());
     out
 }
 
