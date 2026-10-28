@@ -864,3 +864,52 @@ fn a_floating_panel_stays_out_of_the_integrated_titlebar() {
     let drawn = h.ctx.memory(|memory| memory.area_rect(window_layer(&h, PanelKind::Info).id)).expect("Info is drawn floating");
     assert!(drawn.min.y >= filmcraft_ui_egui::header::HEIGHT, "drawn at {drawn:?}");
 }
+
+/// Every text the last frame painted, as (text, colour, underlined).
+fn painted_texts(h: &Harness<'_, FilmcraftApp>) -> Vec<(String, egui::Color32, bool)> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Color32, bool)>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+            egui::Shape::Text(text) => {
+                let format = text.galley.job.sections.first().map(|s| s.format.clone()).unwrap_or_default();
+                out.push((text.galley.text().to_string(), format.color, format.underline != egui::Stroke::NONE));
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    h.output().shapes.iter().for_each(|s| walk(&s.shape, &mut out));
+    out
+}
+
+#[test]
+/// Each group's shown tab is underlined and a hovered tab lights up, as before craft-ui drew
+/// the tab strips (it filled shown and hovered tabs with the strip's own colour, so neither showed).
+fn the_shown_tab_is_underlined_and_a_hovered_tab_lights_up() {
+    let app = FilmcraftApp::new(Session::default());
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    h.state_mut().ui.dock = layout();
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let t = h.state().tokens;
+    let tab = |h: &Harness<'_, FilmcraftApp>, name: &str| {
+        painted_texts(h)
+            .into_iter()
+            .find(|(text, ..)| text == name)
+            .map(|(_, color, underlined)| (color, underlined))
+            .unwrap_or_else(|| panic!("no {name} tab"))
+    };
+    assert_eq!(tab(&h, "Info"), (t.tab_text_active, true), "the shown tab");
+    assert_eq!(tab(&h, "Program"), (t.tab_text_active, true), "the shown tab of the other group");
+    assert_eq!(tab(&h, "Project"), (t.tab_text, false));
+    assert_eq!(tab(&h, "History"), (t.tab_text, false));
+
+    h.event(Event::PointerMoved(rect(&h, "panel.tab.History").center()));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(tab(&h, "History"), (t.tab_text_active, false), "the hovered tab");
+    assert_eq!(tab(&h, "Project"), (t.tab_text, false));
+    assert_eq!(tab(&h, "Info"), (t.tab_text_active, true));
+}

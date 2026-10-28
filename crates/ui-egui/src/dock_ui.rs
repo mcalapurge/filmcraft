@@ -404,6 +404,13 @@ fn path_id(path: &[bool]) -> String {
     path.iter().map(|second| if *second { 'b' } else { 'a' }).collect()
 }
 
+/// A panel tab's label: the group's shown panel underlined, it and a hovered tab in the active
+/// tab colour, the others dimmer.
+fn tab_text(text: String, front: bool, hovered: bool, t: &Tokens) -> egui::RichText {
+    let text = egui::RichText::new(text).color(if front || hovered { t.tab_text_active } else { t.tab_text });
+    if front { text.underline() } else { text }
+}
+
 /// FilmCraft's window is all groups: drops on all four window edges, Ctrl/Cmd-drag undocks, a
 /// release over no target cancels, and a floating window's title bar only moves it.
 fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
@@ -501,9 +508,15 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// With no sequence open, the Timeline's tab says so.
-    fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
-        if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
+    /// With no sequence open, the Timeline's tab says so. The shown tab of each group is
+    /// underlined and a hovered tab lights up: craft-ui only fills them with the panel colour,
+    /// which is the tab strip's colour here.
+    fn label(&mut self, ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
+        let text = if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label() } else { logical.to_string() };
+        let front = self.app.ui.dock.is_visible(*panel);
+        let tab = DockArea::<PanelKind>::hit_id(area_id(), &Hit::Tab(*panel));
+        let hovered = ui.ctx().read_response(tab).is_some_and(|r| r.hovered());
+        tab_text(text, front, hovered, &self.tokens).into()
     }
 
     /// FilmCraft's own panel items head a tab's context menu, as in its ≡ menu; craft-ui adds
