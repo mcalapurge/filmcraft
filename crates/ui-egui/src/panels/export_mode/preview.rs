@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
-    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, ItemId, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params,
-    format_bytes, is_export_busy, json, output_path, pos2, queue_all_help, queue_all_params, vec2,
+    Align2, CUSTOM, Color32, ExportAction, ExportUi, FilmcraftApp, FrameKey, ItemId, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job,
+    export_params, format_bytes, is_export_busy, json, output_path, overwrite, pos2, queue_all_help, queue_all_params, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -233,11 +233,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         if let Some(job) = active_job {
             job.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         } else {
-            let r = app.session.execute("file.exportMedia", export_params(app));
-            match r {
-                Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
-                Err(e) => app.ui.status = e.to_string(),
-            }
+            overwrite::request(app, ExportAction::Now, export_params(app));
         }
     }
     if qresp.clicked() && !busy {
@@ -246,19 +242,10 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             // the queue shows which preset an item came from
             p["preset"] = json!(app.ui.export.preset);
         }
-        match app.session.execute("export.queue.add", p) {
-            Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
-            Err(e) => app.ui.status = e.to_string(),
-        }
+        overwrite::request(app, ExportAction::Queue, p);
     }
     if all.is_some_and(|r| r.clicked()) {
-        match app.session.execute("export.queue.add", queue_all_params(app)) {
-            Ok(v) => {
-                let n = v["added"].as_array().map_or(0, Vec::len);
-                app.ui.status = tlf!("Added {n} sequences to the export queue", n);
-            }
-            Err(e) => app.ui.status = e.to_string(),
-        }
+        overwrite::request(app, ExportAction::QueueAll, queue_all_params(app));
     }
 }
 

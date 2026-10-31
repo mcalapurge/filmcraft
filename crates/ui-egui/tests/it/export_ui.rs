@@ -536,6 +536,103 @@ fn export_button_and_quick_export_popup() {
     assert!(!d.app().ui.export.quick_open);
 }
 
+/// Export, Send to Queue and Queue All ask before replacing a file that exists: Cancel leaves it,
+/// Keep Both numbers the new file, Replace writes over it.
+#[test]
+fn export_and_queue_ask_before_replacing_existing_files() {
+    let mut d = Driver::new("overwrite");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "location": loc, "fileName": "taken", "range": "custom", "customStart": 0.0, "customEnd": 0.25}}));
+    d.frames(2);
+    let taken = d.path("taken.wav");
+    std::fs::write(&taken, b"keep me").unwrap();
+    let jobs = |d: &mut Driver| d.app().session.jobs.len();
+    // Export: Cancel (and Escape) keep the file and export nothing
+    d.click("export.button");
+    assert!(d.app().ui.export.overwrite.is_some());
+    for id in ["export.overwrite", "export.overwrite.replace", "export.overwrite.keepBoth", "export.overwrite.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    let msg = d.ok("ui.elements", json!({"prefix": "export.overwrite"}))[0]["label"].as_str().unwrap_or("").to_string();
+    assert!(msg.contains("taken.wav"), "{msg}");
+    d.snapshot("export-overwrite");
+    d.click("export.overwrite.cancel");
+    assert!(d.app().ui.export.overwrite.is_none() && !d.has("export.overwrite.replace"));
+    d.click("export.button");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+    assert!(d.app().ui.export.overwrite.is_none(), "Escape cancels");
+    assert_eq!(jobs(&mut d), 0);
+    // Keep Both: a numbered file next to it
+    d.click("export.button");
+    d.click("export.overwrite.keepBoth");
+    let kept = d.path("taken_2.wav");
+    d.wait_until("the numbered export", |_| std::fs::metadata(&kept).map(|m| m.len() > 44).unwrap_or(false));
+    assert_eq!(std::fs::read(&taken).unwrap(), b"keep me");
+    // Replace: over it
+    d.click("export.button");
+    d.click("export.overwrite.replace");
+    d.wait_until("the replacing export", |d| d.app().session.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
+    assert_ne!(std::fs::read(&taken).unwrap(), b"keep me");
+    // Send to Queue asks too; a free name goes straight in
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.overwrite.is_some());
+    d.click("export.overwrite.keepBoth");
+    let q = d.queue();
+    assert_eq!(q.len(), 1);
+    assert_eq!(Path::new(q[0]["path"].as_str().unwrap()).file_name().unwrap(), "taken_3.wav");
+    d.ok("ui.set", json!({"export": {"fileName": "fresh"}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.overwrite.is_none());
+    assert_eq!(d.queue().len(), 2);
+    // Queue All: lists the sequences whose files exist
+    d.exec("file.newSequence", json!({"name": "Second Cut"}));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    std::fs::write(d.path("Second Cut.wav"), b"x").unwrap();
+    d.click("export.queueAll");
+    let prompt = d.app().ui.export.overwrite.clone().expect("Queue All asks");
+    assert_eq!(prompt.existing, [d.path("Second Cut.wav")]);
+    d.click("export.overwrite.cancel");
+    assert_eq!(d.queue().len(), 2, "Cancel queues nothing");
+}
+
+/// Quick Export asks too, from any mode: the popup closes and the question stays up until answered.
+#[test]
+fn quick_export_asks_before_replacing_an_existing_file() {
+    let mut d = Driver::new("quick-overwrite");
+    d.ok("ui.set", json!({"mode": "edit"}));
+    let quick = d.path("quick.wav");
+    std::fs::write(&quick, b"keep me").unwrap();
+    d.click("header.quickExport");
+    d.ok("ui.set", json!({"export": {"quickPreset": "Waveform Audio 48 kHz 16-bit", "quickPath": quick}}));
+    d.frames(2);
+    d.click("quickExport.go");
+    assert!(!d.app().ui.export.quick_open, "the popup closes");
+    let prompt = d.app().ui.export.overwrite.clone().expect("Quick Export asks");
+    assert_eq!(prompt.action, filmcraft_ui_egui::panels::export_mode::ExportAction::Quick);
+    assert!(d.has("export.overwrite.keepBoth"), "the question shows outside Export mode");
+    d.click("export.overwrite.cancel");
+    assert!(d.app().session.jobs.is_empty(), "Cancel exports nothing");
+    d.click("header.quickExport");
+    d.click("quickExport.go");
+    d.click("export.overwrite.keepBoth");
+    let kept = d.path("quick_2.wav");
+    // (Quick Export is disabled while an export runs: wait for the job too, not just its file)
+    d.wait_until("the numbered quick export", |d| {
+        std::fs::metadata(&kept).map(|m| m.len() > 44).unwrap_or(false)
+            && d.app().session.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed))
+    });
+    assert_eq!(std::fs::read(&quick).unwrap(), b"keep me");
+    d.click("header.quickExport");
+    d.click("quickExport.go");
+    d.click("export.overwrite.replace");
+    d.wait_until("the replacing quick export", |d| d.app().session.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)));
+    assert_ne!(std::fs::read(&quick).unwrap(), b"keep me");
+}
+
 #[test]
 fn quick_export_file_name_can_be_typed_and_the_folder_link_opens_the_save_dialog() {
     use std::sync::{Arc, Mutex};

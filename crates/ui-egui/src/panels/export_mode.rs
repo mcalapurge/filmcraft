@@ -20,6 +20,8 @@
 //! `export.queueAll.info` ⓘ, which toggles `export.queueAll.details` (shown with two or more
 //! sequences), `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
+//! the "replace existing files?" question (see [`overwrite`]): `export.overwrite`,
+//! `export.overwrite.replace|keepBoth|cancel`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
 //! `presetManager.save`, `presetManager.delete`, `presetManager.import`, `presetManager.export`,
@@ -44,12 +46,14 @@ use crate::frames::{FrameKey, Target};
 use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
+mod overwrite;
 mod presets;
 mod preview;
 mod queue;
 mod quick;
 mod settings;
 
+pub use overwrite::{ExportAction, OverwritePrompt, show as overwrite_prompt};
 use presets::preset_manager;
 #[cfg(test)]
 pub(crate) use preview::RANGES;
@@ -90,6 +94,8 @@ pub struct ExportUi {
     pub quick_open: bool,
     /// The Queue All details, opened with the ⓘ next to the button.
     pub queue_all_info: bool,
+    /// Export / Send to Queue / Queue All waiting for "replace the existing files?" (None = not asked).
+    pub overwrite: Option<OverwritePrompt>,
     pub quick_path: String,
     pub quick_preset: String,
     /// The sequence and its In/Out marks the Range was last chosen for: when either changes, the
@@ -116,6 +122,7 @@ impl Default for ExportUi {
             manager: None,
             quick_open: false,
             queue_all_info: false,
+            overwrite: None,
             quick_path: String::new(),
             quick_preset: String::new(),
             range_for: None,

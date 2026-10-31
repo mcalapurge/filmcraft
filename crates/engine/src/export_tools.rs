@@ -20,8 +20,12 @@
 //! - **Sequence.** Without `sequence`, exports use [`default_export_sequence`] (the active
 //!   sequence, else the first open one, else the first created); `export.sequences` lists them all.
 //!
+//! - **Existing files.** `file.exportMedia`, `export.queue.add` and `export.quick` replace an existing output file
+//!   unless `existing` is `keepBoth` (the new file is numbered past it); `export.conflicts` lists
+//!   the files the same params would replace, so a frontend can ask first.
+//!
 //! Commands: `export.presets.{list,get,save,delete,favorite,import,export}`, `export.formats`,
-//! `export.sequences`, `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
+//! `export.sequences`, `export.resolve`, `export.conflicts`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
 use std::path::{Path, PathBuf};
@@ -611,7 +615,7 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
     settings.range = range;
-    settings.path = output_path(s, p, seq, &settings, None);
+    settings.path = export_media_path(s, p, seq, &settings, cmd)?;
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
@@ -789,9 +793,46 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
     s.export_queue.items.iter().position(|i| i.id == id).ok_or_else(|| bad(cmd, format!("no queued export {id}")))
 }
 
-fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "export.queue.add";
+/// What to do when an output file already exists (`existing` param): `replace` it (the default)
+/// or `keepBoth`, numbering the new file past it.
+fn keep_existing(p: &Value, cmd: &str) -> Result<bool> {
+    match str_p(p, "existing") {
+        None | Some("replace") => Ok(false),
+        Some("keepBoth") => Ok(true),
+        Some(x) => Err(bad(cmd, format!("`existing` must be replace | keepBoth, not `{x}`"))),
+    }
+}
+
+/// An existing file at `path` (through the host, so it works in the browser too).
+fn file_exists(s: &Session, path: &str) -> bool {
+    s.services.file_size(path).is_ok()
+}
+
+/// The output of `file.exportMedia` for `p`; with `existing: keepBoth`, numbered past files that
+/// already exist.
+fn export_media_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, cmd: &str) -> Result<String> {
+    const MAX_TRIES: usize = 10_000;
+    let mut path = output_path(s, p, seq, settings, None);
+    if keep_existing(p, cmd)? {
+        let mut k = 1usize;
+        while file_exists(s, &path) {
+            if k >= MAX_TRIES {
+                return Err(bad(cmd, "could not find a free export filename; choose another folder or filename"));
+            }
+            path = output_path(s, p, seq, settings, Some(k));
+            k += 1;
+        }
+    }
+    Ok(path)
+}
+
+/// The items `export.queue.add` would queue for `p`: each sequence × range with its settings and
+/// a path no ready or encoding queue item (nor, with `existing: keepBoth`, an existing file) has,
+/// and the warnings about the ranges.
+#[allow(clippy::type_complexity)]
+fn plan_queue(s: &Session, p: &Value, cmd: &str) -> Result<(Option<ExportPreset>, Vec<(ItemId, ExportSettings)>, Vec<&'static str>)> {
     const MAX_BATCH: usize = 10_000;
+    let keep = keep_existing(p, cmd)?;
     let (preset, settings) = settings_from_params(s, p, cmd)?;
     let seqs: Vec<ItemId> = match p.get("sequences").filter(|v| !v.is_null()) {
         Some(v) => v
@@ -818,7 +859,6 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let count = seqs.len().checked_mul(ranges.len()).filter(|n| *n <= MAX_BATCH).ok_or_else(|| bad(cmd, "queue at most 10000 exports at once"))?;
     s.export_queue.next_id.checked_add(count as u64).ok_or_else(|| bad(cmd, "the export queue has exhausted its ids"))?;
     let many = count > 1;
-    let mut ids = Vec::new();
     let mut n = 0usize;
     let mut items = Vec::new();
     // Reserve paths across batches too: a second Queue All must not overwrite items still
@@ -842,7 +882,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             st.path = output_path(s, p, seq, &st, suffix);
             // sequences of the same name into one folder: number the later ones, not overwrite
             let mut k = 1usize;
-            while !reserved.insert(path_key(&st.path)) {
+            while (keep && file_exists(s, &st.path)) || !reserved.insert(path_key(&st.path)) {
                 if k >= MAX_BATCH {
                     return Err(bad(cmd, "could not find a unique export filename; choose another folder or filename"));
                 }
@@ -853,6 +893,34 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
+    Ok((preset, items, warnings))
+}
+
+/// `export.conflicts`: the files an `export.queue.add` (or, with `now`, a `file.exportMedia`; with
+/// `quick`, an `export.quick`) with these params would replace, so a frontend can ask before
+/// overwriting them.
+fn conflicts(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "export.conflicts";
+    let paths: Vec<String> = if bool_p(p, "quick").unwrap_or(false) {
+        vec![quick_plan(s, p, cmd)?.3.path]
+    } else if bool_p(p, "now").unwrap_or(false) {
+        let seq = sequence_param(s, p, cmd)?;
+        let (_, mut settings) = settings_from_params(s, p, cmd)?;
+        let project = s.project.clone();
+        settings.range = range_param(s, &project, seq, p.get("range"), p, cmd)?.0;
+        vec![export_media_path(s, p, seq, &settings, cmd)?]
+    } else {
+        plan_queue(s, p, cmd)?.1.into_iter().map(|(_, st)| st.path).collect()
+    };
+    let existing: Vec<String> = paths.into_iter().filter(|x| file_exists(s, x)).collect();
+    Ok(json!({"existing": existing}))
+}
+
+fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "export.queue.add";
+    let (preset, items, warnings) = plan_queue(s, p, cmd)?;
+    let project = s.project.clone();
+    let mut ids = Vec::new();
     for (seq, st) in items {
         s.export_queue.next_id += 1;
         let id = s.export_queue.next_id;
@@ -994,8 +1062,10 @@ fn queue_clear(s: &mut Session, p: &Value) -> Result<Value> {
 // quick export, resolve, presets commands
 // ---------------------------------------------------------------------------------------------
 
-fn quick(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "export.quick";
+/// What `export.quick` exports for `p`: the preset name asked for, the sequence, the preset found
+/// and the settings with their range and output path, and the warnings about its range.
+#[allow(clippy::type_complexity)]
+fn quick_plan(s: &Session, p: &Value, cmd: &str) -> Result<(String, ItemId, Option<ExportPreset>, ExportSettings, Vec<&'static str>)> {
     let name = str_p(p, "preset").map(str::to_string).or_else(|| s.export_queue.quick_preset.clone()).unwrap_or_else(|| DEFAULT_PRESET.to_string());
     let mut q = p.clone();
     if !q.is_object() {
@@ -1007,7 +1077,13 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, q.get("range"), &q, cmd)?;
     settings.range = range;
-    settings.path = output_path(s, &q, seq, &settings, None);
+    settings.path = export_media_path(s, &q, seq, &settings, cmd)?;
+    Ok((name, seq, preset, settings, warnings))
+}
+
+fn quick(s: &mut Session, p: &Value) -> Result<Value> {
+    let (name, seq, preset, settings, warnings) = quick_plan(s, p, "export.quick")?;
+    let project = s.project.clone();
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
@@ -1255,10 +1331,18 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             "export.queue.add",
             "Send to Export Queue",
-            r#"{…settings params,"path":str|dir?,"sequence":id?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?}"#,
+            r#"{…settings params,"path":str|dir?,"sequence":id?,"sequences":[id]?,"ranges":[range]?,"existing":"replace|keepBoth"=replace,"start":bool?,"wait":bool?}"#,
             has_any_seq,
             queue_add,
             true,
+        ),
+        spec(
+            "export.conflicts",
+            "List Export Files That Exist",
+            r#"{…export.queue.add params (or file.exportMedia params with "now":true, export.quick params with "quick":true),"existing":"replace|keepBoth"=replace}"#,
+            has_any_seq,
+            conflicts,
+            false,
         ),
         spec("export.queue.list", "List Export Queue", "{}", always, queue_list, false),
         spec("export.queue.start", "Start Export Queue", r#"{"wait":bool=false}"#, always, queue_start, true),
@@ -1268,7 +1352,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.remove", "Remove Queued Export", r#"{"id":id}"#, always, queue_remove, true),
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
-        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec(
+            "export.quick",
+            "Quick Export",
+            r#"{"preset":str?,"path":str?,"existing":"replace|keepBoth"=replace,"wait":bool?, …settings params}"#,
+            has_seq,
+            quick,
+            true,
+        ),
     ]
 }
 

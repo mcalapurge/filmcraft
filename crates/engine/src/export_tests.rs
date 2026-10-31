@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::Session;
+use filmcraft_project::ItemId;
 
 #[test]
 fn project_names_become_one_export_filename_component() {
@@ -91,6 +92,59 @@ fn queueing_several_sequences_into_a_folder_keeps_every_file() {
     let paths: Vec<String> =
         v["items"].as_array().unwrap().iter().map(|i| Path::new(i["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().to_string()).collect();
     assert_eq!(paths, ["Cut.wav", "Cut_2.wav", "Promo.wav"]);
+}
+
+/// `export.conflicts` lists the files an export or queue add would replace; `existing: keepBoth`
+/// numbers the new files past them instead, and anything else is refused.
+#[test]
+fn existing_files_are_listed_and_kept_on_request() {
+    let mut s = demo();
+    let id = s.state.active_sequence.unwrap().0;
+    let name = crate::export_tools::file_safe(&s.project.item(ItemId(id)).unwrap().name);
+    let dir = std::env::temp_dir().join(format!("fc-export-existing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let taken = dir.join("taken.wav");
+    std::fs::write(&taken, b"keep me").unwrap();
+    let file = json!({"format": "wav", "path": taken});
+    let now = json!({"format": "wav", "path": taken, "now": true});
+    let v = s.execute("export.conflicts", file.clone()).unwrap();
+    assert_eq!(v["existing"], json!([taken.to_string_lossy()]));
+    assert_eq!(s.execute("export.conflicts", now).unwrap()["existing"], v["existing"]);
+    assert_eq!(s.execute("export.conflicts", json!({"format": "wav", "path": dir.join("free.wav")})).unwrap()["existing"], json!([]));
+    // a folder for every sequence: only the sequence whose file exists
+    std::fs::write(dir.join(format!("{name}.wav")), b"x").unwrap();
+    let folder = format!("{}/", dir.display());
+    let all = s.execute("export.conflicts", json!({"format": "wav", "path": folder, "sequences": [id]})).unwrap();
+    assert_eq!(all["existing"].as_array().unwrap().len(), 1);
+    // keep both: the next free numbered name, for the queue and for an export now
+    let mut keep = file.clone();
+    keep["existing"] = json!("keepBoth");
+    let v = s.execute("export.queue.add", keep.clone()).unwrap();
+    let queued = v["items"][0]["path"].as_str().unwrap().to_string();
+    assert_eq!(Path::new(&queued).file_name().unwrap(), "taken_2.wav");
+    assert_eq!(s.execute("export.conflicts", keep.clone()).unwrap()["existing"], json!([]), "nothing to replace when keeping both");
+    std::fs::write(dir.join("taken_2.wav"), b"x").unwrap();
+    keep["wait"] = json!(true);
+    let v = s.execute("file.exportMedia", keep).unwrap();
+    assert_eq!(Path::new(v["path"].as_str().unwrap()).file_name().unwrap(), "taken_3.wav");
+    assert_eq!(std::fs::read(&taken).unwrap(), b"keep me");
+    // replace (the default) writes over it
+    s.execute(
+        "file.exportMedia",
+        json!({"format": "wav", "path": taken, "existing": "replace", "wait": true, "range": "custom", "startSeconds": 0, "endSeconds": 0.1}),
+    )
+    .unwrap();
+    assert_ne!(std::fs::read(&taken).unwrap(), b"keep me");
+    // Quick Export: listed with `quick`, numbered with keep both
+    let quick = json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": taken, "quick": true});
+    assert_eq!(s.execute("export.conflicts", quick).unwrap()["existing"], json!([taken.to_string_lossy()]));
+    let v = s.execute("export.quick", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": taken, "existing": "keepBoth"})).unwrap();
+    assert_eq!(Path::new(v["path"].as_str().unwrap()).file_name().unwrap(), "taken_4.wav");
+    for cmd in ["export.conflicts", "export.queue.add", "file.exportMedia", "export.quick"] {
+        assert!(s.execute(cmd, json!({"format": "wav", "path": taken, "existing": "maybe"})).is_err(), "{cmd}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
