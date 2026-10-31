@@ -696,7 +696,10 @@ mod tests {
             for (family, stack) in &defs.families {
                 // installed faces come after the craft run: right-to-left ones (Hebrew is not in
                 // craft-fonts) and the Hangul face (none is in craft-fonts)
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n) && n.as_str() != crate::cjk::KOREAN_FACE).collect();
+                let stack: Vec<&String> = stack
+                    .iter()
+                    .filter(|n| !crate::rtl::is_system_face(n) && n.as_str() != crate::cjk::KOREAN_FACE && n.as_str() != crate::cjk::THAI_FACE)
+                    .collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));

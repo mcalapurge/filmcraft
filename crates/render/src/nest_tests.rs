@@ -543,3 +543,62 @@ fn a_nest_that_runs_a_fraction_of_a_frame_past_its_sequence_shows_its_last_frame
     let s = &r.p.sequence(inner).unwrap().clone();
     assert_eq!(nest_time(r.p.sequence(outer).unwrap(), s, FrameRate::FPS_30.tick_of(73)), FrameRate::FPS_30.tick_of(73));
 }
+
+#[test]
+fn transformed_plain_nests_preserve_the_group_picture() {
+    let t = FrameRate::FPS_24.tick_of(20);
+    for (scale, rotation) in [(100.0, 0.0), (60.0, 0.0), (130.0, 19.0)] {
+        let mut r = Rig::new();
+        let (inner, outer, nest) = two_layer_nest(&mut r);
+        let sequence = r.p.sequence(inner).unwrap();
+        let child = sequence.video_tracks[0].items[0].id;
+        let position = filmcraft_geom::Vec2::new(sequence.settings.width as f64 * 0.75, sequence.settings.height as f64 * 0.5);
+        r.clip(inner, child).effect_mut("motion").unwrap().param_mut("position").unwrap().value = ParamValue::Vec2(position);
+        let motion = r.clip(outer, nest).effect_mut("motion").unwrap();
+        motion.param_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(175.0, 75.0));
+        motion.param_mut("scale").unwrap().value = ParamValue::Float(scale);
+        motion.param_mut("rotation").unwrap().value = ParamValue::Float(rotation);
+        for preview in [1.0, 0.5] {
+            let opts = RenderOptions { scale: preview, ..Default::default() };
+            let reference = render_sequence(&r.p, outer, t, opts, &r.map);
+            let frame_plan = plan::plan_frame(&r.p, outer, t, opts, &r.map);
+            let planned = plan::execute_cpu(&frame_plan);
+            let difference = worst(&planned, &reference);
+            assert!(difference < 0.001, "scale {scale}, rotation {rotation}, preview {preview}: {difference}");
+        }
+    }
+}
+
+#[test]
+fn a_transformed_nest_keeps_captions_at_its_held_source_time() {
+    let mut r = Rig::new();
+    let (inner, outer, nest) = two_layer_nest(&mut r);
+    let mut captions = CaptionTrack::new(TrackId(9901), "Nested".into(), CaptionFormat::Subtitle);
+    captions.captions.push(Caption {
+        id: ClipId(9902),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "HELD".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+        words: Vec::new(),
+    });
+    r.p.sequence_mut(inner).unwrap().caption_tracks.push(captions);
+    let clip = r.clip(outer, nest);
+    clip.frame_hold = Some(FrameRate::FPS_24.tick_of(12));
+    clip.effect_mut("motion").unwrap().param_mut("scale").unwrap().value = ParamValue::Float(75.0);
+    let t = FrameRate::FPS_24.tick_of(30);
+    let with = r.frame(outer, t);
+    assert!(worst(&r.planned(outer, t), &with) < 0.001);
+    r.p.sequence_mut(inner).unwrap().caption_tracks[0].enabled = false;
+    let without = r.frame(outer, t);
+    assert!(worst(&with, &without) > 0.1, "held caption must be visible after its outer-time end");
+    // without captions the scaled nest is drawn as its own layers, each resampled once instead of
+    // the picture twice (see `a_scaled_or_moved_nest_is_still_planned_as_its_own_layers`): edges
+    // differ a little, and no caption is left behind
+    let (planned, reference) = (r.planned(outer, t), without);
+    let mean = planned.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).sum::<f32>() / planned.px.len().max(1) as f32;
+    assert!(mean < 0.01, "plan and reference differ by {mean} on average");
+    assert!(worst(&planned, &with) > 0.1, "a hidden caption track draws nothing");
+}

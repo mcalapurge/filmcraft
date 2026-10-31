@@ -553,6 +553,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn styles_saved_without_a_font_style_load_semibold() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.font_style, "SemiBold");
+    }
+
+    #[test]
     fn plain() {
         assert_eq!(plain_text("<i>Hello</i> &amp; <b>bye</b>"), "Hello & bye");
         assert_eq!(plain_text("{\\an8}Top"), "Top");

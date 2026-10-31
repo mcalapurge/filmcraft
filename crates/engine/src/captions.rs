@@ -175,6 +175,7 @@ pub fn copy(s: &mut Session) -> usize {
     s.state.caption_clipboard = picked.into_iter().map(|(ti, c)| (ti, filmcraft_project::Caption { start: c.start - min, ..c })).collect();
     s.state.clipboard.clear();
     s.state.clipboard_markers.clear();
+    s.state.clipboard_transitions.clear();
     s.state.caption_clipboard.len()
 }
 
@@ -360,7 +361,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"fontStyle":str?,"uppercase":bool?,"highlight":"off|color|box|reveal"?,"highlightColor":str?,"highlightBoxColor":str?,"highlightScale":0.5..2?,"preset":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"uppercase":bool?,"highlight":"off|color|box|reveal"?,"highlightColor":str?,"highlightBoxColor":str?,"highlightScale":0.5..2?,"preset":str?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -405,6 +406,9 @@ pub fn commands() -> Vec<CommandSpec> {
                     }
                     if let Some(v) = str_p(&p, "font") {
                         y.font = v.to_string();
+                    }
+                    if let Some(v) = str_p(&p, "fontStyle") {
+                        y.font_style = v.trim().to_string();
                     }
                     if let Some(v) = f64_p(&p, "size") {
                         y.size = (v as f32).clamp(4.0, 400.0);

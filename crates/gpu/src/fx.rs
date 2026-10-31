@@ -52,6 +52,20 @@ const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
+const OP_BOKEH_DOWN: u32 = 32;
+const OP_BOKEH_BOOST: u32 = 33;
+const OP_BOKEH: u32 = 34;
+const OP_BOKEH_UP: u32 = 35;
+const OP_THREE_WAY: u32 = 36;
+// Lumetri's full GPU passes (`lumetri.wgsl`): basic, advanced, HSL key, key median, HSL correct,
+// selective colour; then the output colour conversion
+const OP_LUMETRI_BASIC: u32 = 40;
+const OP_LUMETRI_ADVANCED: u32 = 41;
+const OP_LUMETRI_HSL_KEY: u32 = 42;
+const OP_LUMETRI_MEDIAN: u32 = 43;
+const OP_LUMETRI_HSL_CORRECT: u32 = 44;
+const OP_LUMETRI_SELECTIVE: u32 = 45;
+const OP_OUTPUT_COLOR: u32 = 46;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -115,13 +129,14 @@ fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
     }
 }
 
-/// The passes of an op (empty: no-op). Unsharp's blur passes come first, then the combine.
-fn steps(op: &FxOp) -> Vec<Step> {
+/// The passes of an op on a `w`×`h` working image (empty: no-op). Unsharp's blur passes come
+/// first, then the combine.
+fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
     let mut out = Vec::new();
     match op {
         FxOp::OutputColor(params) => {
             let matrix = params.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-            let mut s = step(38, [params.tone.is_some() as u32, params.desaturate.is_some() as u32, 0, 0], &[]);
+            let mut s = step(OP_OUTPUT_COLOR, [params.tone.is_some() as u32, params.desaturate.is_some() as u32, 0, 0], &[]);
             for (dst, src) in s.p.iter_mut().zip(matrix.iter().flatten()) {
                 *dst = *src;
             }
@@ -133,33 +148,32 @@ fn steps(op: &FxOp) -> Vec<Step> {
         }
 
         FxOp::LumetriFull(full) => {
-            out.push(step(32, [0; 4], &[]));
-            out.push(step(33, [0; 4], &[]));
+            out.push(step(OP_LUMETRI_BASIC, [0; 4], &[]));
+            out.push(step(OP_LUMETRI_ADVANCED, [0; 4], &[]));
             if full.hsl {
                 let start = out.len();
-                out.push(step(34, [0; 4], &[]));
+                out.push(step(OP_LUMETRI_HSL_KEY, [0; 4], &[]));
                 if full.median_radius > 0 {
-                    out.push(step(35, [full.median_radius, 0, 0, 0], &[]));
+                    out.push(step(OP_LUMETRI_MEDIAN, [full.median_radius, 0, 0, 0], &[]));
                 }
                 boxes(&full.mask_blur.0, false, true, &mut out);
                 boxes(&full.mask_blur.1, true, true, &mut out);
                 for s in out.iter_mut().skip(start) {
                     s.unsharp_blur = true;
                 }
-                let mut correct = step(36, [0; 4], &[]);
+                let mut correct = step(OP_LUMETRI_HSL_CORRECT, [0; 4], &[]);
                 correct.combine = true;
                 out.push(correct);
             }
             if full.selective {
-                out.push(step(37, [0; 4], &[]));
+                out.push(step(OP_LUMETRI_SELECTIVE, [0; 4], &[]));
             }
             if full.sharpen.abs() > 1e-3 {
-                out.extend(steps(&FxOp::Unsharp {
-                    rx: full.sharpen_blur.0.clone(),
-                    ry: full.sharpen_blur.1.clone(),
-                    amount: full.sharpen.max(-1.0),
-                    threshold: 0.0,
-                }));
+                out.extend(steps(
+                    &FxOp::Unsharp { rx: full.sharpen_blur.0.clone(), ry: full.sharpen_blur.1.clone(), amount: full.sharpen.max(-1.0), threshold: 0.0 },
+                    w,
+                    h,
+                ));
             }
             for s in &mut out {
                 s.data = Some(full.data.clone());
@@ -175,6 +189,11 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::ColorBalance { sh, md, hi, preserve } => {
             out.push(step(OP_COLOR_BALANCE, [*preserve as u32, 0, 0, 0], &[sh[0], sh[1], sh[2], 0.0, md[0], md[1], md[2], 0.0, hi[0], hi[1], hi[2]]))
         }
+        FxOp::ThreeWay { sh, md, hi, range, sat } => out.push(step(
+            OP_THREE_WAY,
+            [op.is_identity_three_way() as u32, 0, 0, 0],
+            &[sh[0], sh[1], sh[2], sh[3], md[0], md[1], md[2], md[3], hi[0], hi[1], hi[2], hi[3], range[0], range[1], range[2], range[3], *sat],
+        )),
         FxOp::LeaveColor { amount, key_hue, tol, soft } => out.push(step(OP_LEAVE_COLOR, [0; 4], &[*amount, *key_hue, *tol, *soft])),
         FxOp::ChangeToColor { from_hue, to_hue, tol, soft } => out.push(step(OP_CHANGE_TO_COLOR, [0; 4], &[*from_hue, *to_hue, *tol, *soft])),
         FxOp::ColorPass { key, sim, reverse } => out.push(step(OP_COLOR_PASS, [*reverse as u32, 0, 0, 0], &[key[0], key[1], key[2], *sim])),
@@ -191,6 +210,29 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::DirectionalBlur { dx, dy, steps } => {
             if *steps >= 2 {
                 out.push(step(OP_DIRECTIONAL, [*steps, 0, 0, 0], &[*dx, *dy]));
+            }
+        }
+        FxOp::Bokeh { levels, boost, threshold, sides, rot, rr, rings } => {
+            if *rings > 0 {
+                // `vfx::bokeh` on the top-left part of the working textures: each halving writes
+                // the half-size image there, the boost and the gather work in place, and the
+                // last pass scales it back up to the whole image.
+                let (mut ww, mut wh) = (w, h);
+                for _ in 0..*levels {
+                    out.push(step(OP_BOKEH_DOWN, [ww, wh, 0, 0], &[]));
+                    (ww, wh) = ((ww / 2).max(1), (wh / 2).max(1));
+                }
+                if *boost > 0.0 {
+                    out.push(step(OP_BOKEH_BOOST, [ww, wh, 0, 0], &[*boost, *threshold]));
+                }
+                out.push(step(OP_BOKEH, [ww, wh, *sides, *rings], &[*rr, *rot]));
+                if *levels > 0 {
+                    // `Image::transformed` by scale(w / ww, h / wh): its inverse, in f64 as there
+                    let m = filmcraft_geom::Affine::scale(w as f64 / ww as f64, h as f64 / wh as f64);
+                    if let Some(inv) = m.inverse() {
+                        out.push(step(OP_BOKEH_UP, [ww, wh, 0, 0], &[inv.a as f32, inv.d as f32, inv.e as f32, inv.f as f32]));
+                    }
+                }
             }
         }
         FxOp::Unsharp { rx, ry, amount, threshold } => {
@@ -453,7 +495,7 @@ impl FxStage {
         if w > max || h > max {
             return None;
         }
-        let all: Vec<Step> = fx.ops.iter().flat_map(steps).collect();
+        let all: Vec<Step> = fx.ops.iter().flat_map(|op| steps(op, w, h)).collect();
         let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
@@ -510,7 +552,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 4, resource: table.as_entire_binding() },
                 ],
             });
-            let groups = if s.code == 35 {
+            let groups = if s.code == OP_LUMETRI_MEDIAN {
                 (w.div_ceil(8), h.div_ceil(8))
             } else if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
@@ -518,7 +560,7 @@ impl FxStage {
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, median: s.code == 35, bg, groups });
+            dispatches.push(Dispatch { run: s.run, median: s.code == OP_LUMETRI_MEDIAN, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;

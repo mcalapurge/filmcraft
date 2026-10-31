@@ -197,16 +197,16 @@ fn selective_full(c:vec3<f32>)->vec3<f32> {
 }
 fn lumetri_full(op:u32,p:vec2<i32>)->vec4<f32> {
     let o=ld(p);
-    if op==34u {var m=0.0;if o.a>1e-6 {m=hsl_key_full(o.rgb/o.a);}return vec4(m);}
-    if op==36u {
+    if op==OP_LUMETRI_HSL_KEY {var m=0.0;if o.a>1e-6 {m=hsl_key_full(o.rgb/o.a);}return vec4(m);}
+    if op==OP_LUMETRI_HSL_CORRECT {
         let original=textureLoad(aux,p,0);if original.a<=1e-6 {return original;}
         return vec4(hsl_correct(original.rgb/original.a,o.x)*original.a,original.a);
     }
     if o.a<=1e-6 {return o;}
     let c=o.rgb/o.a;var result=c;
-    if op==32u {result=basic_full(c,p);}
-    else if op==33u {result=advanced_full(c);}
-    else if op==37u {result=selective_full(c);}
+    if op==OP_LUMETRI_BASIC {result=basic_full(c,p);}
+    else if op==OP_LUMETRI_ADVANCED {result=advanced_full(c);}
+    else if op==OP_LUMETRI_SELECTIVE {result=selective_full(c);}
     return vec4(result*o.a,o.a);
 }
 // Display transform after compositing in the sequence's working primaries.

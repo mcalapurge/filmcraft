@@ -159,6 +159,8 @@ fn built_in_keeps_saved_changes_and_restores(d: &mut Driver) {
     assert!(d.menu_err("window.workspace.rename", json!({"from": "Assembly", "to": "Mine"})).contains("keeps its name"));
 }
 
+/// Window ▸ Workspaces end to end: save a new workspace, switch away and back, reset, save changes
+/// to a built-in and restore it, rename and delete, and the saved ones surviving a restart.
 #[test]
 fn save_switch_reset_rename_delete_and_restart() {
     let data = data_dir("cycle");
@@ -187,6 +189,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Learning",
             "Review",
             "Vertical",
+            "Vertical CapCut Style",
             "Reset to Saved Layout",
             "Save Changes to this Workspace",
             "Save as New Workspace…",
@@ -239,6 +242,7 @@ fn save_switch_reset_rename_delete_and_restart() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// The Save as New Workspace… and Edit Workspaces… dialogs driven by their own fields and buttons.
 #[test]
 fn save_rename_and_delete_through_the_dialogs() {
     let data = data_dir("dialogs");
@@ -285,16 +289,16 @@ fn save_rename_and_delete_through_the_dialogs() {
 }
 
 #[test]
-fn vertical_workspace_keeps_portrait_preview_beside_the_timeline() {
-    let data = data_dir("vertical");
+fn vertical_capcut_style_workspace_keeps_portrait_preview_beside_the_timeline() {
+    let data = data_dir("vertical-capcut");
     let mut d = Driver::launch(&data);
     d.app().session.execute("sequence.settings", json!({"width": 1080, "height": 1920})).unwrap();
-    d.menu("window.workspace.vertical", json!({}));
-    assert_eq!(d.workspace(), "Vertical");
+    d.menu("window.workspace.verticalcapcutstyle", json!({}));
+    assert_eq!(d.workspace(), "Vertical CapCut Style");
     for panel in [PanelKind::Project, PanelKind::Properties, PanelKind::Timeline, PanelKind::Program, PanelKind::LiveCaptions] {
         assert!(d.shows(panel));
     }
-    assert!(d.workspaces_menu().iter().any(|(name, checked)| name == "Vertical" && *checked));
+    assert!(d.workspaces_menu().iter().any(|(name, checked)| name == "Vertical CapCut Style" && *checked));
     let layout = d.app().ui.dock.clone();
     let Some(craft_ui::docking::Node::Split { axis: craft_ui::layout::SplitAxis::Horizontal, first, second, .. }) = &layout.root else {
         panic!("preview must be beside the editing area")
@@ -304,14 +308,51 @@ fn vertical_workspace_keeps_portrait_preview_beside_the_timeline() {
     assert_eq!(second.panel_state(&PanelKind::Program), craft_ui::docking::PanelState::Front);
     assert!(!first.contains(&PanelKind::Program));
     assert!(first.contains(&PanelKind::Timeline));
-    d.snapshot("vertical");
+    d.snapshot("vertical-capcut-style");
     d.menu("window.workspace.saveChanges", json!({}));
     d.menu("window.workspace.editing", json!({}));
-    d.menu("window.workspace.vertical", json!({}));
+    d.menu("window.workspace.verticalcapcutstyle", json!({}));
     assert_eq!(d.app().ui.dock, layout);
     drop(d);
     let mut reopened = Driver::launch(&data);
-    assert_eq!(reopened.workspace(), "Vertical");
+    assert_eq!(reopened.workspace(), "Vertical CapCut Style");
     assert_eq!(reopened.app().ui.dock, layout);
     std::fs::remove_dir_all(data).unwrap();
+}
+
+/// The workspace menu in the header (the workspace's name at the top of the window) offers the
+/// actions of Window ▸ Workspaces under the list: Reset to Saved Layout, Save Changes to this
+/// Workspace, Save as New Workspace… and Edit Workspaces….
+#[test]
+fn the_header_workspace_menu_saves_resets_and_opens_the_dialogs() {
+    use filmcraft_ui_egui::state::WorkspaceDialog;
+    let data = data_dir("header");
+    let mut d = Driver::launch(&data);
+    let ws = d.workspace();
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+
+    d.click("header.workspaceName");
+    d.snapshot("header-menu");
+    d.click("header.workspaces.saveChanges");
+    assert!(!d.has("header.workspaces.saveChanges"), "the menu closes");
+    assert_eq!(saved_file(&data)["saved"][0]["name"], json!(ws), "the layout is saved to the workspace in use");
+
+    d.ok("ui.panel.show", json!({"panel": "Metadata"}));
+    d.frames(2);
+    assert!(d.shows(PanelKind::Metadata));
+    d.click("header.workspaceName");
+    d.click("header.workspaces.reset");
+    assert!(!d.shows(PanelKind::Metadata), "Reset to Saved Layout brings back the saved layout");
+    assert_eq!(d.workspace(), ws);
+
+    d.click("header.workspaceName");
+    d.click("header.workspaces.saveAs");
+    assert!(matches!(d.app().ui.workspace_dialog, Some(WorkspaceDialog::SaveAs { .. })), "Save as New Workspace… asks for a name");
+    d.click("workspaces.save.cancel");
+    assert!(d.app().ui.workspace_dialog.is_none());
+
+    d.click("header.workspaceName");
+    d.click("header.workspaces.edit");
+    assert!(matches!(d.app().ui.workspace_dialog, Some(WorkspaceDialog::Edit { .. })), "Edit Workspaces… opens its dialog");
+    let _ = std::fs::remove_dir_all(&data);
 }

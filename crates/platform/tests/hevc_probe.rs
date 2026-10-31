@@ -1,7 +1,6 @@
 //! `register()` answers the HEVC availability probe in the background, so the first draw of the
-//! format list does not create a hardware session on the UI thread. One test in this file on
-//! purpose, and its own test binary: anything else in the process asking `hevc_available()` first
-//! (the `it` binary's VideoToolbox tests run on parallel threads) would make the wait meaningless.
+//! format list does not create a hardware session on the UI thread. Its own test binary on purpose:
+//! anything else that asked `hevc_available()` first would make the wait below meaningless.
 #![cfg(target_os = "macos")]
 
 use std::time::{Duration, Instant};

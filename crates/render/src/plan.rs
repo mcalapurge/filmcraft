@@ -753,9 +753,17 @@ fn nest_layers(
     nest: u32,
 ) -> Option<Vec<PlanStep>> {
     let (w, h) = output_size(nested, opts.scale);
+    // nested output pixels (at the render scale) → this sequence's output pixels
+    let motion = motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt);
+    let captions = crate::caption_overlays(nested, ft, w, h);
+    // Captions of a moved, scaled or rotated nest are set at the size it is shown (as the
+    // picture renders them), not set full size and resampled: render the nest as a picture.
+    if !captions.is_empty() && !near_identity(&motion) {
+        return None;
+    }
     let mut inner = PlanStack::default();
     push_tracks(project, nested, ft, opts, sources, nest + 1, &mut inner);
-    for o in crate::caption_overlays(nested, ft, w, h) {
+    for o in captions {
         inner.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)), Affine::translate(o.x as f64, o.y as f64), 1.0, Blend::Normal));
     }
     if inner.exhausted {
@@ -781,8 +789,6 @@ fn nest_layers(
     if !all_inside {
         return None;
     }
-    // nested output pixels (at the render scale) → this sequence's output pixels
-    let motion = motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt);
     if near_identity(&motion) {
         return Some(steps);
     }
