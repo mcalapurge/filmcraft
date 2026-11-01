@@ -802,6 +802,10 @@ fn models(s: &mut Session, _: &Value) -> Result<Value> {
         // whether the models can run here (an installed `Session::transcriber` doesn't use them)
         "available": speech_available() || host.is_some(),
         "default": filmcraft_speech::models::DEFAULT_MODEL,
+        // Settings ▸ Media Analysis & Transcription ▸ Speech model: what `transcript.generate` uses
+        "selected": s.prefs.media_analysis.whisper_model,
+        // where Whisper runs in this process ("Metal" or "CPU"; null without the `whisper` feature)
+        "accelerator": filmcraft_speech::accelerator(),
         "dir": dir.as_ref().map(|d| d.to_string_lossy().to_string()),
         "models": filmcraft_speech::models::catalogue().iter().map(|m| json!({
             "id": m.id, "name": m.name, "multilingual": m.multilingual, "description": m.description,
@@ -818,7 +822,7 @@ fn models(s: &mut Session, _: &Value) -> Result<Value> {
 /// [`SpeechHost`] job (`{"job": id}`). Hosts show the size, source and licence
 /// (`transcript.models`) and ask before running this.
 fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
+    let id = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
     if let Some(host) = s.speech_host.clone() {
         if host.installed(m.id) {

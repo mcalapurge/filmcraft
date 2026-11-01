@@ -3,11 +3,13 @@
 //! Models are downloaded on first use, after the user confirms (the dialog shows the size, the
 //! source URL and the licence), into `<data dir>/models/<id>/`. They are never bundled with
 //! FilmCraft or committed to the repository. Every file is pinned to a Hugging Face revision of
-//! OpenAI's own repositories and checked against its SHA-256 before it is used.
+//! the publisher's own repository (OpenAI's, or Hugging Face's `distil-whisper` for the distilled
+//! model) and checked against its SHA-256 before it is used.
 //!
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
-//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0 (large-v3-turbo: MIT).
+//! Distil-Whisper (distil-large-v3.5) is MIT. All are permissive.
 
 use std::path::{Path, PathBuf};
 
@@ -51,7 +53,10 @@ const AUTHOR: &str = "OpenAI";
 
 macro_rules! hf {
     ($repo:literal, $rev:literal, $name:literal, $sha:literal, $size:expr) => {
-        ModelFile { name: $name, url: concat!("https://huggingface.co/openai/", $repo, "/resolve/", $rev, "/", $name), sha256: $sha, size: $size }
+        hf!("openai", $repo, $rev, $name, $sha, $size)
+    };
+    ($org:literal, $repo:literal, $rev:literal, $name:literal, $sha:literal, $size:expr) => {
+        ModelFile { name: $name, url: concat!("https://huggingface.co/", $org, "/", $repo, "/resolve/", $rev, "/", $name), sha256: $sha, size: $size }
     };
 }
 
@@ -142,7 +147,7 @@ static CATALOGUE: &[ModelInfo] = &[
         id: "whisper-small",
         name: "Whisper small (multilingual)",
         multilingual: true,
-        description: "244 M parameters. Most accurate here; about 4× slower than base.",
+        description: "244 M parameters. More accurate than base; about 4× slower.",
         license: LICENSE,
         license_url: LICENSE_URL,
         author: AUTHOR,
@@ -175,6 +180,138 @@ static CATALOGUE: &[ModelInfo] = &[
                 "model.safetensors",
                 "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
                 966995080
+            ),
+        ],
+    },
+    ModelInfo {
+        id: "whisper-large-v3-turbo",
+        name: "Whisper large-v3-turbo (multilingual)",
+        multilingual: true,
+        description: "809 M parameters. Close to large-v3 accuracy at several times its speed; best on a Mac GPU.",
+        license: "MIT (OpenAI Whisper weights)",
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3-turbo",
+        files: &[
+            hf!(
+                "openai",
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "config.json",
+                "c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a",
+                1256
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "generation_config.json",
+                "cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c",
+                3772
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "tokenizer.json",
+                "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+                2710337
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "model.safetensors",
+                "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
+                1617824864
+            ),
+        ],
+    },
+    ModelInfo {
+        id: "whisper-large-v3",
+        name: "Whisper large-v3 (multilingual)",
+        multilingual: true,
+        description: "1.55 B parameters. Most accurate, with the best punctuation; slowest. Best on a Mac GPU.",
+        license: LICENSE,
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3",
+        files: &[
+            hf!(
+                "openai",
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "config.json",
+                "ad0e8d1e46f4d01f7861a21509e5d0f977d6cc1f367a370603c92541d819807b",
+                1272
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "generation_config.json",
+                "fbdfa70135de9b1d31553393f14e80aaeb1936ea36576b2ba864055943c09d23",
+                3903
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "tokenizer.json",
+                "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+                2480617
+            ),
+            hf!(
+                "openai",
+                "whisper-large-v3",
+                "06f233fe06e710322aca913c1bc4249a0d71fce1",
+                "model.safetensors",
+                "a8e94b85976e5864ba3e9525c7e6c83b2a1eca42d4b797a0c7c24d778e40fd95",
+                3087130976
+            ),
+        ],
+    },
+    ModelInfo {
+        id: "distil-large-v3.5",
+        name: "Distil-Whisper large-v3.5 (English)",
+        multilingual: false,
+        description: "756 M parameters, distilled from large-v3 for English. Fastest of the large models.",
+        license: "MIT (Distil-Whisper)",
+        license_url: "https://huggingface.co/distil-whisper/distil-large-v3.5",
+        author: "Hugging Face (Distil-Whisper)",
+        source: "https://huggingface.co/distil-whisper/distil-large-v3.5",
+        files: &[
+            hf!(
+                "distil-whisper",
+                "distil-large-v3.5",
+                "728a7691f3ff1d3d971528d3203a6e9559165d41",
+                "config.json",
+                "515a10a9979258d3fc71cf79b2cd055c189f07d78879a15bd9bc282673308b85",
+                1249
+            ),
+            hf!(
+                "distil-whisper",
+                "distil-large-v3.5",
+                "728a7691f3ff1d3d971528d3203a6e9559165d41",
+                "generation_config.json",
+                "b521c66612bd95be36c154f2d3904f6e4ea3be481a18a48f293d66791f60cf98",
+                4249
+            ),
+            hf!(
+                "distil-whisper",
+                "distil-large-v3.5",
+                "728a7691f3ff1d3d971528d3203a6e9559165d41",
+                "tokenizer.json",
+                "b3c8202bbf06d8ee4232c5984baa563784ac4737e2e7fdc42fa180200d3cfcdb",
+                2480645
+            ),
+            hf!(
+                "distil-whisper",
+                "distil-large-v3.5",
+                "728a7691f3ff1d3d971528d3203a6e9559165d41",
+                "model.safetensors",
+                "76ec9f754fc4b4810845dc36b71d1897c1342e702810c179e1569690084cfb0c",
+                3025686376
             ),
         ],
     },
@@ -228,7 +365,8 @@ pub fn missing_bytes(models_dir: &Path, m: &ModelInfo) -> u64 {
     m.files.iter().filter(|f| !valid_file(&d.join(f.name), f)).map(|f| f.size).sum()
 }
 
-/// The tokenizer shared by the multilingual models has one checksum.
+/// The tokenizer shared by Whisper tiny, base and small has one checksum (the large-v3 family
+/// has 128 mel bands and a newer tokenizer).
 pub fn shared_tokenizer_sha() -> &'static str {
     TOKENIZER_MULTI
 }
@@ -326,11 +464,15 @@ mod tests {
         for m in catalogue() {
             assert!(m.size() > 100_000_000, "{}", m.id);
             for f in m.files {
-                assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url);
+                assert!(
+                    f.url.starts_with("https://huggingface.co/openai/whisper-") || f.url.starts_with("https://huggingface.co/distil-whisper/distil-"),
+                    "{}",
+                    f.url
+                );
                 assert!(f.url.contains("/resolve/") && f.url.ends_with(f.name));
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
-                if f.name == "tokenizer.json" {
+                if f.name == "tokenizer.json" && ["whisper-tiny", "whisper-base", "whisper-small"].contains(&m.id) {
                     assert_eq!(f.sha256, shared_tokenizer_sha());
                 }
             }

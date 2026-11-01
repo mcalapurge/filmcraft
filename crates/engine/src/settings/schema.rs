@@ -179,8 +179,15 @@ const ANALYSIS_CACHE: &[(&str, &str)] = &[("mediaCache", "In the Media Cache"), 
 const TRANSCRIBE_SCOPE: &[(&str, &str)] =
     &[("sequenceClips", "Auto-transcribe only clips in sequences"), ("allImported", "Auto-transcribe all imported clips")];
 
-const MODELS: &[(&str, &str)] =
-    &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+/// Every model in `filmcraft_speech::models::catalogue()` (checked by a test).
+const MODELS: &[(&str, &str)] = &[
+    ("whisper-tiny", "Whisper tiny (fastest)"),
+    ("whisper-base", "Whisper base (balanced)"),
+    ("whisper-small", "Whisper small"),
+    ("distil-large-v3.5", "Distil-Whisper large-v3.5 (English, fast)"),
+    ("whisper-large-v3-turbo", "Whisper large-v3-turbo (accurate, fast)"),
+    ("whisper-large-v3", "Whisper large-v3 (most accurate)"),
+];
 
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 
@@ -769,5 +776,18 @@ impl crate::autosave::Preferences {
         r.retain(|p| p != path);
         r.insert(0, path.to_string());
         r.truncate(10);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn speech_model_choices_match_the_catalogue() {
+        let ids: Vec<&str> = filmcraft_speech::models::catalogue().iter().map(|m| m.id).collect();
+        let mut choices: Vec<&str> = super::MODELS.iter().map(|m| m.0).collect();
+        choices.sort_unstable();
+        let mut want = ids.clone();
+        want.sort_unstable();
+        assert_eq!(choices, want);
     }
 }

@@ -83,13 +83,21 @@ which runs them once the transcripts are in, in every build. One job takes at mo
 
 Weights are **never** bundled or committed. They are downloaded on request into
 `<data dir>/models/<id>/` (see `filmcraft_engine::autosave::default_data_dir`), each file pinned to a
-revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
+revision of the publisher's Hugging Face repository (OpenAI's; Hugging Face's `distil-whisper` for
+the distilled model) and checked against its SHA-256:
 
 | Id | Languages | Licence |
 |---|---|---|
 | `whisper-tiny` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-base` (default) | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-small` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
+| `distil-large-v3.5` | English | MIT (Hugging Face Distil-Whisper) |
+| `whisper-large-v3-turbo` | multilingual | MIT (OpenAI) |
+| `whisper-large-v3` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
+
+On 209 s of English speech on an M-series Mac (Metal), 2026-11-01: base 4 s, distil-large-v3.5
+14 s, large-v3-turbo 15 s (86 s on the CPU), large-v3 46 s. large-v3 gives the best punctuation and
+fewest errors.
 
 ### Testing
 
