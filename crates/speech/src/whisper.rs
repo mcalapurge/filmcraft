@@ -1,4 +1,5 @@
-//! Whisper speech recognition in pure Rust (candle, CPU).
+//! Whisper speech recognition in pure Rust (candle): on the GPU through Metal on macOS when one is
+//! available ([`model::gpu`]), else on the CPU.
 //!
 //! Transcription follows the procedure described with the model (sequential 30-second windows):
 //!
@@ -55,6 +56,11 @@ fn merr(e: candle_core::Error) -> SpeechError {
     SpeechError::Model(e.to_string())
 }
 
+/// Whether Whisper would run on the GPU here ([`model::gpu`]).
+pub fn gpu_available() -> bool {
+    model::gpu().is_some()
+}
+
 pub struct Whisper {
     id: String,
     model: Mutex<Model>,
@@ -87,8 +93,13 @@ impl Whisper {
             .as_array()
             .map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as u32)).collect())
             .unwrap_or_else(|| vec![220, tok.eot]);
-        let model = Model::load(cfg, weights).map_err(merr)?;
+        let model = Model::load(cfg, &weights).map_err(merr)?;
         Ok(Self { id: id.to_string(), model: Mutex::new(model), tok, alignment_heads, suppress, begin_suppress })
+    }
+
+    /// Where the model runs: "Metal" or "CPU".
+    pub fn device(&self) -> &'static str {
+        self.model.lock().map(|m| m.device_name()).unwrap_or_else(|e| e.into_inner().device_name())
     }
 
     pub fn languages(&self) -> Vec<String> {

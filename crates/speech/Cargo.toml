@@ -11,7 +11,7 @@ workspace = true
 
 [features]
 default = []
-# Whisper inference on the CPU via candle (pure Rust). Off by default; the web build turns it on
+# Whisper inference via candle (pure Rust; on macOS also Metal, see below). Off by default; the web build turns it on
 # for its speech worker (apps/filmcraft-web).
 whisper = ["dep:candle-core", "dep:candle-nn"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
@@ -31,6 +31,12 @@ rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
 sha2 = "0.10"
 web-time = "1"
+
+# macOS: candle's Metal backend, so Whisper runs on the GPU when the Mac has one (chosen at run
+# time; CPU otherwise). Only compiled in with `whisper`.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9", default-features = false, features = ["metal"], optional = true }
+candle-nn = { version = "0.9", default-features = false, features = ["metal"], optional = true }
 
 [[example]]
 name = "transcribe"

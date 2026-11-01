@@ -13,7 +13,7 @@ fn main() {
     let id = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let t0 = std::time::Instant::now();
     let w = filmcraft_speech::whisper::Whisper::load(&dir, &id).expect("load");
-    eprintln!("loaded {id} in {:.2}s", t0.elapsed().as_secs_f64());
+    eprintln!("loaded {id} on {} in {:.2}s", w.device(), t0.elapsed().as_secs_f64());
     let mut show_words = false;
     let mut diarize = false;
     let mut language = None;

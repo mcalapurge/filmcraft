@@ -141,6 +141,19 @@ pub const fn available() -> bool {
     cfg!(feature = "whisper")
 }
 
+/// Where Whisper runs in this process: "Metal" (the GPU, macOS) or "CPU"; None without the
+/// `whisper` feature.
+pub fn accelerator() -> Option<&'static str> {
+    #[cfg(feature = "whisper")]
+    {
+        Some(if whisper::gpu_available() { "Metal" } else { "CPU" })
+    }
+    #[cfg(not(feature = "whisper"))]
+    {
+        None
+    }
+}
+
 /// Mix a multi-channel buffer down to mono.
 pub fn downmix(channels: &[Vec<f32>]) -> Vec<f32> {
     let n = channels.iter().map(Vec::len).min().unwrap_or(0);

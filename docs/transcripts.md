@@ -38,7 +38,8 @@ the control channel and MCP agents can do the same.
 ## Speech recognition
 
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
-OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/candle) on the CPU,
+OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/candle): on the GPU
+through Metal on macOS when the Mac has one, else on the CPU ([ADR 0002](adr/0002-speech-metal.md)),
 with timestamp decoding, language detection and word times from cross-attention alignment (see the
 `filmcraft_speech::whisper` module docs). The alignment makes words contiguous (each word ends where
 the next starts) and places a start that follows a pause late, so the word bounds are then measured

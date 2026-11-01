@@ -7,7 +7,8 @@ model handling: [docs/transcripts.md](../../docs/transcripts.md).
   `FixedTranscriber` for tests and agents.
 - `models`: Whisper model catalogue (pinned revisions, SHA-256, sizes, licences) and, with feature
   `download`, the verified downloader (ureq + rustls + RustCrypto). Weights are never bundled.
-- `whisper` (feature `whisper`): Whisper inference on candle (CPU, pure Rust).
+- `whisper` (feature `whisper`): Whisper inference on candle (pure Rust; on macOS on the GPU through
+  Metal when available, [ADR 0002](../../docs/adr/0002-speech-metal.md), else the CPU).
 - `mel`, `vad`, `diarize`: log-mel front end, word-bound tightening, MFCC-clustering speaker labels.
 
 Both features are off by default. The web app enables `whisper` for its Web Worker;

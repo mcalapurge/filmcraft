@@ -93,7 +93,8 @@ impl Attention {
         if let Some(m) = mask {
             qk = qk.broadcast_add(m)?;
         }
-        let w = candle_nn::ops::softmax_last_dim(&qk)?;
+        // softmax in f32 whatever the weights are (half precision on the GPU)
+        let w = candle_nn::ops::softmax_last_dim(&qk.to_dtype(DType::F32)?)?.to_dtype(v.dtype())?;
         let o = w.matmul(&v)?.transpose(1, 2)?.contiguous()?;
         let (b, _, _, _) = o.dims4()?;
         Ok((self.out.forward(&o.reshape((b, t, d))?)?, qk))
@@ -171,7 +172,7 @@ impl Encoder {
 
     /// `mel`: (1, n_mels, 3000) → (1, 1500, d).
     pub fn forward(&mut self, mel: &Tensor) -> Result<Tensor> {
-        let x = self.conv1.forward(mel)?.gelu_erf()?;
+        let x = self.conv1.forward(&mel.to_dtype(self.pos.dtype())?)?.gelu_erf()?;
         let x = self.conv2.forward(&x)?.gelu_erf()?;
         let x = x.transpose(1, 2)?;
         let t = x.dim(1)?;
@@ -229,7 +230,7 @@ impl Decoder {
         let offset = if cached { self.offset } else { 0 };
         let ids = Tensor::new(tokens, dev)?.unsqueeze(0)?;
         let mut x = self.tok.forward(&ids)?.broadcast_add(&self.pos.narrow(0, offset, t)?)?;
-        let mask = if t > 1 { Some(Self::mask(t, offset, dev)?) } else { None };
+        let mask = if t > 1 { Some(Self::mask(t, offset, dev)?.to_dtype(x.dtype())?) } else { None };
         let mut picked = Vec::new();
         for (li, b) in self.blocks.iter_mut().enumerate() {
             let (y, qk) = b.forward(&x, Some(xa), mask.as_ref(), cached)?;
@@ -246,10 +247,30 @@ impl Decoder {
             self.offset += t;
         }
         let x = self.ln.forward(&x)?;
-        let logits = x.broadcast_matmul(&self.tok_t)?;
-        let qk = if picked.is_empty() { None } else { Some(Tensor::stack(&picked, 0)?) };
+        let logits = x.broadcast_matmul(&self.tok_t)?.to_dtype(DType::F32)?;
+        let qk = if picked.is_empty() { None } else { Some(Tensor::stack(&picked, 0)?.to_dtype(DType::F32)?) };
         Ok((logits, qk))
     }
+}
+
+/// The GPU Whisper runs on: Metal on macOS (picked at run time, so a Mac without a usable Metal
+/// device runs on the CPU). `FILMCRAFT_SPEECH_DEVICE=cpu` forces the CPU.
+/// The device is created once per process and shared by every model loaded.
+pub fn gpu() -> Option<Device> {
+    static GPU: std::sync::OnceLock<Option<Device>> = std::sync::OnceLock::new();
+    GPU.get_or_init(|| {
+        if std::env::var("FILMCRAFT_SPEECH_DEVICE").is_ok_and(|v| v.eq_ignore_ascii_case("cpu")) {
+            return None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // a broken driver must not take the app down: fall back to the CPU
+            std::panic::catch_unwind(|| Device::new_metal(0)).ok().and_then(Result::ok)
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    })
+    .clone()
 }
 
 pub struct Model {
@@ -260,11 +281,27 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn load(cfg: Config, weights: Vec<u8>) -> Result<Self> {
-        let device = Device::Cpu;
-        let vb = VarBuilder::from_buffered_safetensors(weights, DType::F32, &device)?;
+    /// Load onto the GPU when there is one ([`gpu`]), else (or when that fails) the CPU.
+    pub fn load(cfg: Config, weights: &[u8]) -> Result<Self> {
+        if let Some(device) = gpu()
+            && let Ok(m) = Self::load_on(cfg.clone(), weights, device)
+        {
+            return Ok(m);
+        }
+        Self::load_on(cfg, weights, Device::Cpu)
+    }
+
+    fn load_on(cfg: Config, weights: &[u8], device: Device) -> Result<Self> {
+        // half precision on the GPU (twice the speed, half the memory); f32 on the CPU
+        let dtype = if device.is_cpu() { DType::F32 } else { DType::F16 };
+        let vb = VarBuilder::from_slice_safetensors(weights, dtype, &device)?;
         let vb = vb.pp("model");
         Ok(Self { encoder: Encoder::new(&cfg, vb.pp("encoder"))?, decoder: Decoder::new(&cfg, vb.pp("decoder"))?, cfg, device })
+    }
+
+    /// "Metal" or "CPU".
+    pub fn device_name(&self) -> &'static str {
+        if self.device.is_metal() { "Metal" } else { "CPU" }
     }
 
     pub fn last_logits(logits: &Tensor) -> Result<Vec<f32>> {
