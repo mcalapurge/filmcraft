@@ -141,13 +141,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let track_idx = current_track(ui, &seq.caption_tracks);
     let track = track_idx.and_then(|i| seq.caption_tracks.get(i));
     let words = app.ui.live_captions.words.clamp(1, 4);
+    // the open sequence, not whatever is selected in the Project panel
+    let items: Vec<u64> = app.session.state.active_sequence.map(|q| q.0).into_iter().collect();
     let generate = move |actions: &mut Vec<(String, Value)>| {
         let create = json!({"maxWords": words, "source": "transcript"});
         if has_transcript {
             actions.push(("captions.createLive".into(), create));
         } else {
             // `then`: a transcription that runs as a background job (web) makes the captions when it ends
-            actions.push(("transcript.generate".into(), json!({"then": [{"command": "captions.createLive", "params": create}]})));
+            actions.push(("transcript.generate".into(), json!({"items": items, "then": [{"command": "captions.createLive", "params": create}]})));
         }
     };
 

@@ -156,10 +156,14 @@ impl FilmcraftApp {
         Some(job)
     }
 
-    /// The running job for drawing only; polling/play-after-render stays in logic.
+    /// The running job for drawing only; polling/play-after-render stays in logic. The newest job
+    /// that has made progress, else the oldest unfinished one: a queued job (a transcription
+    /// waiting for the one before it) must not hide the job that is working.
     fn running_job(&self) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
-        self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
+        let unfinished = self.session.jobs.iter().filter(|j| !j.progress.finished.load(Ordering::Relaxed));
+        let oldest = unfinished.clone().next();
+        unfinished.rev().find(|j| j.progress.fraction() > 0.0).or(oldest).cloned()
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
@@ -174,7 +178,15 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+        let verb = if job.label.starts_with("Rendering") {
+            crate::i18n::t(&job.label).to_string()
+        } else if job.label.starts_with("Transcribe") {
+            tl!("Transcribing").to_string()
+        } else if job.label.starts_with("Download") {
+            tl!("Downloading").to_string()
+        } else {
+            tl!("Exporting").to_string()
+        };
         let progress = p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,

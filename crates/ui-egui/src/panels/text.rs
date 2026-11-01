@@ -579,6 +579,33 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         } else {
             tl!("This build has no speech-to-text; import a transcript with transcript.set.")
         };
+        // a transcription running in the background: its progress instead of the button
+        let running = app
+            .session
+            .transcript_jobs
+            .iter()
+            .find_map(|pj| app.session.jobs.iter().find(|j| j.id == pj.job && !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)).cloned());
+        if let Some(job) = running {
+            let status = job.progress.status.lock().map(|s| s.clone()).unwrap_or_default();
+            ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, status, Tokens::ui(12.0), t.text_dim);
+            let bar = Rect::from_center_size(c + vec2(0.0, 18.0), vec2(200.0, 6.0));
+            ui.painter().rect_filled(bar, 3.0, t.separator);
+            let f = job.progress.fraction().clamp(0.0, 1.0);
+            ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 3.0, t.accent);
+            app.auto.add("text.transcript.progress", bar, "Transcription progress");
+            let r = Rect::from_center_size(c + vec2(0.0, 44.0), vec2(90.0, 22.0));
+            let resp = ui.interact(r, egui::Id::unique("text.transcript.cancel"), Sense::click());
+            ui.painter().rect_filled(r, 11.0, if resp.hovered() { t.separator } else { t.header_bg });
+            ui.painter().rect_stroke(r, 11.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Cancel"), Tokens::ui(12.0), t.text);
+            app.auto.add("text.transcript.cancel", r, "Cancel");
+            if resp.clicked() {
+                actions.push(("jobs.cancel".into(), json!({"job": job.id})));
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+            run(app, ui, actions);
+            return;
+        }
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
         // without speech-to-text the button is shown disabled: it looked ready and a click did
@@ -596,7 +623,9 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             e.enabled = Some(available);
         }
         if available && resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            // the open sequence, not whatever is selected in the Project panel
+            let items: Vec<u64> = app.session.state.active_sequence.map(|q| q.0).into_iter().collect();
+            actions.push(("transcript.generate".into(), json!({"items": items})));
         } else if !available {
             resp.on_hover_text(note);
         }

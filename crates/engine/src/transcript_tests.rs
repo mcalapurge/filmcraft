@@ -179,3 +179,26 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// A sequence selected in the Project panel stands for its audio clips' media; it used to be
+/// dropped as "not media", so Transcribe failed with "nothing to transcribe".
+#[test]
+fn generate_from_a_selected_sequence() {
+    let (mut s, item, _) = session();
+    let seq = s.state.active_sequence.unwrap();
+    s.state.project_selection = vec![seq];
+    let r = s.execute("transcript.generate", json!({})).unwrap();
+    assert!(s.project.transcripts.contains_key(&item), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // a sequence passed as `items` (the Text panel's Transcribe button) does the same
+    s.state.project_selection.clear();
+    s.execute("transcript.generate", json!({"items": [seq.0]})).unwrap();
+    assert!(s.project.transcripts.contains_key(&item));
+    s.execute("edit.undo", json!({})).unwrap();
+
+    // a selection with nothing to transcribe falls back to the open sequence
+    s.state.project_selection = vec![ItemId(u64::MAX)];
+    s.execute("transcript.generate", json!({})).unwrap();
+    assert!(s.project.transcripts.contains_key(&item));
+}

@@ -156,6 +156,35 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Speech-to-text and live captions
+
+Transcription is ordinary commands (see [transcripts.md](transcripts.md) and
+[captions.md](captions.md)); what differs by mode is when the transcript arrives:
+
+- **Bridge (the desktop app)** and the web build run it as a background job.
+  `transcript.generate`, `sequence.transcribe` and `transcript.downloadModel` return
+  `{job, items, model, poll: "jobs.list", cancel: "jobs.cancel"}` at once. Poll `jobs.list` until
+  the job is `finished`; its `status` reads `Reading audio NN%`, `Waiting for the transcription
+  before it`, `Downloading <model> NN%`, `Loading <model>` or `Transcribing with <model> NN%`, and
+  `etaSeconds` is set once it has measured progress. The transcript is applied (one undo step) on
+  the app's next frame after it finishes; then `transcript.inspect` / `transcript.search` see it.
+  `result: {"error": "stopped"}` means it was cancelled and nothing changed. Jobs run one at a time,
+  in the order they were asked for.
+- **Headless** (`--demo`, `--project`) and `filmcraft-cli` transcribe in place: the call returns
+  when the transcript is in, with `{items: [{item, words, speakers, language, source}], skipped, then}`.
+- **Targets:** `items` may hold clips, subclips or sequences (a sequence means the media of its
+  enabled audio clips). Without `items`: the Project panel selection, else the active sequence.
+- **Follow-ups:** `then: [{command, params}]` runs commands once the transcript is in, in either
+  mode, e.g. `{"then": [{"command": "captions.createLive", "params": {"maxWords": 3, "source":
+  "transcript"}}]}` for live captions. They are skipped if the active sequence changed meanwhile.
+- **Models:** `transcript.models` lists the catalogue with `installed`, `size` and `license`, plus
+  `selected` (the Settings model `transcript.generate` uses without `model`) and `accelerator`
+  (`"Metal"` or `"CPU"`). Change the default with `prefs.set {"key":
+  "mediaAnalysis.whisperModel", "value": "whisper-large-v3"}`, or pass `model` per call.
+  `transcript.downloadModel` downloads a missing model (it defaults to the selected one); a
+  transcription job downloads it first when needed. Large models are gigabytes: check `size` and
+  ask the user before downloading one they have not chosen.
+
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

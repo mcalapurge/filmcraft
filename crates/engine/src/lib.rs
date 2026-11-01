@@ -55,6 +55,8 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod source_monitor;
+#[cfg(all(feature = "whisper", not(target_arch = "wasm32")))]
+pub mod speech_native;
 pub mod sync;
 pub mod transcript;
 pub mod trim;

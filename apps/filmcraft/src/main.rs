@@ -235,6 +235,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 log::warn!("auto-save and crash recovery unavailable: {e}");
             }
         }
+        // Transcribe runs on a background thread (progress in the status bar) instead of the UI's
+        #[cfg(feature = "whisper")]
+        if let Some(dir) = filmcraft_engine::transcript::models_dir() {
+            session.speech_host = Some(std::sync::Arc::new(filmcraft_engine::speech_native::NativeSpeech::new(dir)));
+        }
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);

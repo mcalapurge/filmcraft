@@ -333,3 +333,22 @@ fn a_host_must_return_exactly_one_transcript_per_requested_clip() {
     assert!(job.result.lock().unwrap().as_ref().unwrap().is_err());
     assert!(toasts(&mut s).iter().any(|(m, e)| m.contains("transcript") && *e));
 }
+
+/// Jobs reach the host in the order they were asked for, even when a later job's audio is read
+/// first (a short clip queued after a long one used to overtake it, so the older transcript
+/// replaced the newer one).
+#[test]
+fn jobs_reach_the_host_in_order() {
+    let (mut s, host, long) = session();
+    let short = (5..=10)
+        .map(ItemId)
+        .find(|&i| s.source(i).is_some_and(|src| src.info().has_audio() && src.info().duration < s.source(long).unwrap().info().duration))
+        .expect("a demo clip with audio shorter than the score");
+    // every clip with audio, read a block per clip per poll, against one short clip
+    let all: Vec<u64> = (5..=11).filter(|&i| s.source(ItemId(i)).is_some_and(|src| src.info().has_audio())).collect();
+    let first = s.execute("transcript.generate", json!({"items": all})).unwrap()["job"].as_u64().unwrap();
+    let second = s.execute("transcript.generate", json!({"items": [short.0]})).unwrap()["job"].as_u64().unwrap();
+    poll_until_started(&mut s, &host, second);
+    let order: Vec<u64> = host.jobs.lock().unwrap().iter().map(|j| j.id).collect();
+    assert_eq!(order, [first, second]);
+}

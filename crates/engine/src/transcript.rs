@@ -91,27 +91,43 @@ fn ids_p(p: &Value, k: &str) -> Option<Vec<ItemId>> {
     p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(ItemId).collect())
 }
 
-/// Items to transcribe: `items` / `item`, else the Project panel selection, else the media of the
-/// active sequence's enabled audio clips. Subclips resolve to their media; duplicates are removed.
+/// Items to transcribe: `items` / `item`, else the Project panel selection, else the active
+/// sequence. A sequence stands for the media of its enabled audio clips (nested sequences too);
+/// subclips resolve to their media; duplicates are removed. A Project panel selection with nothing
+/// to transcribe (a bin, a graphic) falls back to the active sequence.
 fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
-    let mut raw = ids_p(p, "items").or_else(|| u64_p(p, "item").map(|i| vec![ItemId(i)])).unwrap_or_default();
-    if raw.is_empty() {
-        raw = s.state.project_selection.clone();
+    let raw = ids_p(p, "items").or_else(|| u64_p(p, "item").map(|i| vec![ItemId(i)])).unwrap_or_default();
+    let (mut out, mut seen) = (Vec::new(), Vec::new());
+    if !raw.is_empty() {
+        collect_targets(s, &raw, &mut out, &mut seen);
+        return out;
     }
-    if raw.is_empty()
-        && let Some(q) = s.active_sequence()
+    collect_targets(s, &s.state.project_selection, &mut out, &mut seen);
+    if out.is_empty()
+        && let Some(q) = s.state.active_sequence
     {
-        raw = q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.enabled).map(|it| it.item).collect();
+        collect_targets(s, &[q], &mut out, &mut seen);
     }
-    let mut out = Vec::new();
-    for i in raw {
-        if let Some(m) = media_item(s, i)
+    out
+}
+
+/// Adds the media behind `raw` to `out`; `seen` holds the sequences already expanded, so nested
+/// (or cyclic) sequences are walked once each.
+fn collect_targets(s: &Session, raw: &[ItemId], out: &mut Vec<ItemId>, seen: &mut Vec<ItemId>) {
+    for &i in raw {
+        if let Some(q) = s.project.sequence(i) {
+            if seen.contains(&i) {
+                continue;
+            }
+            seen.push(i);
+            let clips: Vec<ItemId> = q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.enabled).map(|it| it.item).collect();
+            collect_targets(s, &clips, out, seen);
+        } else if let Some(m) = media_item(s, i)
             && !out.contains(&m)
         {
             out.push(m);
         }
     }
-    out
 }
 
 /// Mono 16 kHz audio of a media item (None: no audio).
@@ -451,6 +467,8 @@ fn poll_one(s: &mut Session, host: &dyn SpeechHost, i: usize) {
     if job.progress.finished.load(Ordering::Relaxed) {
         return;
     }
+    // jobs reach the host in the order they were asked for, however fast their audio reads
+    let waiting = s.transcript_jobs.get(..i).is_some_and(|earlier| earlier.iter().any(|pj| !pj.started));
     let Some(mut pj) = (i < s.transcript_jobs.len()).then(|| s.transcript_jobs.remove(i)) else { return };
     if job.progress.cancel.load(Ordering::Relaxed) {
         if pj.started {
@@ -465,7 +483,9 @@ fn poll_one(s: &mut Session, host: &dyn SpeechHost, i: usize) {
         if let Err(e) = read_audio(s, &mut pj, &job.progress) {
             finish(&job.progress, &job.result, Err(e));
         } else if pj.reads.iter().all(|r| r.samples.len() >= r.len) {
-            if pj.reads.is_empty() && !pj.skipped.is_empty() {
+            if waiting {
+                *lock(&job.progress.status) = "Waiting for the transcription before it".into();
+            } else if pj.reads.is_empty() && !pj.skipped.is_empty() {
                 finish(&job.progress, &job.result, Err("none of the clips has audio to transcribe".into()));
             } else {
                 pj.started = true;

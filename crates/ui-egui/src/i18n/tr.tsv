@@ -2965,6 +2965,8 @@
 	Graphics problem: switched to software compositing	Grafik sorunu: yazılımla birleştirmeye geçildi
 	GPU acceleration is unavailable; preview renders on the CPU	GPU hızlandırması kullanılamıyor; önizleme CPU üzerinde işleniyor
 	Exporting	Dışa aktarılıyor
+	Transcribing	Metne dönüştürülüyor
+	Downloading	İndiriliyor
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Seçmek için tıklayın veya çerçeveyle seçmek için boş alana tıklayıp sürükleyin. Diğer seçenekler için Shift, Opt ve Cmd tuşlarını kullanın.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Tüm izlerde sağdaki tüm klipleri seçmek için tıklayın. Tek bir iz için Shift ile tıklayın.
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	Tüm izlerde soldaki tüm klipleri seçmek için tıklayın. Tek bir iz için Shift ile tıklayın.

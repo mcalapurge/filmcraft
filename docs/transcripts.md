@@ -22,7 +22,8 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `then` (commands to run once the transcripts are in). One undo step. On the web it runs as a background job (`{"job": id}`). |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the active sequence; a sequence means the media of its enabled audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `then` (commands to run once the transcripts are in). One undo step. In the desktop app and on the web it runs as a background job (`{"job": id}`; the desktop app
+installs `filmcraft_engine::speech_native::NativeSpeech`); the CLI and headless sessions run it in place. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
