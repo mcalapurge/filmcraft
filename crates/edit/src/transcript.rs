@@ -7,7 +7,11 @@
 //!   transcribed clip covers the word's midpoint, so a dialogue clip duplicated on two tracks (or a
 //!   stereo pair split over two mono tracks) reads once;
 //! - a word belongs to a clip when its midpoint, mapped through the clip's speed, falls inside the
-//!   clip; its timeline bounds are clamped to the clip, so a word cut by an edit is shown cut;
+//!   clip, or when the clip's start cuts it short but 40 ms of it still plays (an edit tight on its
+//!   first syllable). Words ending a sentence or clause still need their midpoint: Whisper stretches
+//!   them over the pause that follows, where edits land. A razor cut through continuous media gives
+//!   the word to the side holding its midpoint only. Bounds are clamped to the clip, so a word cut
+//!   by an edit is shown cut;
 //! - disabled clips, reversed clips and frame holds contribute no words (they don't play speech).
 //!
 //! Text edits turn word ranges into timeline ranges ([`word_range`]) snapped outward to frames, then
@@ -18,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use filmcraft_project::{Caption, ClipId, ItemId, Sequence, TrackId, Transcript};
+use filmcraft_project::{Caption, ClipId, ItemId, Sequence, TrackId, TrackItem, Transcript};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
 use crate::EditCtx;
@@ -72,19 +76,35 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
             let Some(tr) = transcripts.get(&it.item) else { continue };
             mine.push(it.range());
             let speed = it.speed;
-            let media_end = it.source_in + ticks(it.duration.0 as f64 * speed);
+            let media_end = media_end(it);
             let to_tl = |m: Tick| it.start + ticks((m - it.source_in).0 as f64 / speed);
             for wi in tr.words_in(TimeRange::from_bounds(it.source_in, media_end.max(it.source_in))) {
                 let w = &tr.words[wi];
                 let (a, b) = (to_tl(w.start), to_tl(w.end.max(w.start)));
                 let mid = Tick(a.0 + (b.0 - a.0) / 2);
-                if mid < it.start || mid >= it.end() || claimed.iter().any(|r| r.contains(mid)) {
+                let (va, vb) = (a.max(it.start), b.min(it.end()));
+                if mid >= it.end() {
+                    continue;
+                }
+                if mid < it.start {
+                    // cut short by the clip's start: an edit on its first syllable leaves its
+                    // midpoint outside the clip. Kept when HEARD of it plays, except a word ending a
+                    // sentence or clause (Whisper stretches it over the pause after it, where edits
+                    // land) or when the clip before continues the media (a razor cut gives the word
+                    // to the side holding its midpoint)
+                    let ends_clause = w.text.ends_with(['.', ',', '?', '!', ';', ':', '…']);
+                    if ends_clause || vb.0.saturating_sub(va.0) < HEARD.0 || continued_before(&track.items, it) {
+                        continue;
+                    }
+                }
+                let at = Tick(va.0 + (vb.0 - va.0).max(0) / 2);
+                if claimed.iter().any(|r| r.contains(at)) {
                     continue;
                 }
                 out.push(SeqWord {
                     text: w.text.clone(),
-                    start: a.max(it.start),
-                    end: b.min(it.end()).max(a.max(it.start)),
+                    start: va,
+                    end: vb.max(va),
                     clip: it.id,
                     item: it.item,
                     index: wi,
@@ -98,6 +118,32 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
     }
     out.sort_by_key(|w| (w.start, w.track));
     out
+}
+
+/// Media time where `it` stops playing.
+fn media_end(it: &TrackItem) -> Tick {
+    it.source_in + ticks(it.duration.0 as f64 * it.speed)
+}
+
+/// How much of a word cut short by a clip's start must play for the clip to keep it (one frame
+/// at 25 fps).
+const HEARD: Tick = Tick(TICKS_PER_SECOND / 25);
+
+/// Another clip on the track plays into `it`'s start without a jump in the media: the two sides
+/// of a razor cut.
+fn continued_before(items: &[TrackItem], it: &TrackItem) -> bool {
+    // within a millisecond: source times are rounded through the clip speed
+    let near = |x: Tick, y: Tick| x.0.abs_diff(y.0) <= (TICKS_PER_SECOND / 1000).unsigned_abs();
+    items.iter().any(|o| {
+        o.id != it.id
+            && o.enabled
+            && !o.reverse
+            && o.frame_hold.is_none()
+            && o.item == it.item
+            && o.speed == it.speed
+            && o.end() == it.start
+            && near(media_end(o), it.source_in)
+    })
 }
 
 /// Index of the word being spoken at `t` (the last word starting at or before `t` whose end is

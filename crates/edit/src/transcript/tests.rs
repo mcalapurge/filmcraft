@@ -102,6 +102,54 @@ fn a_cut_word_is_kept_by_its_midpoint_and_clamped() {
     assert_eq!(w[0].end, s(0.3));
 }
 
+/// An edit tight on a word's first syllable kept the word only when its midpoint was in the clip,
+/// so the first word of a clip went missing ("stick drift" read "drift").
+#[test]
+fn a_word_cut_short_at_the_clip_start_is_kept_when_40ms_plays() {
+    let mut q = seq();
+    // "today" is 4.10–4.50 (midpoint 4.30): from media 4.35, 0.15 s of it plays
+    q.audio_tracks[0].items.push(clip(100, 0.0, 1.0, 4.35));
+    let w = sequence_words(&q, &transcripts());
+    assert_eq!(texts(&w).first(), Some(&"today"));
+    assert_eq!((w[0].start, w[0].end), (Tick::ZERO, s(0.15)));
+    // 0.08 s of it plays: whisper-base timed "stick" 28.54–28.88 and the clip started at 28.80
+    q.audio_tracks[0].items[0].source_in = s(4.42);
+    assert_eq!(texts(&sequence_words(&q, &transcripts())).first(), Some(&"today"));
+    // 0.03 s: a sliver, not a word
+    q.audio_tracks[0].items[0].source_in = s(4.47);
+    assert_eq!(texts(&sequence_words(&q, &transcripts())).first(), Some(&"we"));
+    // a word ending a sentence is stretched over the pause after it: 0.2 s of "show." (1.20–1.70)
+    // is most likely that pause
+    q.audio_tracks[0].items[0].source_in = s(1.5);
+    assert!(sequence_words(&q, &transcripts()).is_empty());
+}
+
+/// Word starts run early (into the pause before the word), so a clip ending in that pause must not
+/// pick up the next word: at the clip's end a word still needs its midpoint inside.
+#[test]
+fn a_word_cut_short_at_the_clip_end_needs_its_midpoint() {
+    let mut q = seq();
+    // media 0–1.4 s: 0.2 s of "show." (1.20–1.70) plays, its midpoint doesn't
+    q.audio_tracks[0].items.push(clip(100, 0.0, 1.4, 0.0));
+    assert_eq!(texts(&sequence_words(&q, &transcripts())), ["Welcome", "to", "the"]);
+}
+
+#[test]
+fn a_razor_cut_through_a_word_reads_it_once() {
+    let mut q = seq();
+    // media 3–5.35 s split at 4.35, inside "today" (4.10–4.50, midpoint 4.30: the first clip's)
+    q.audio_tracks[0].items.push(clip(100, 0.0, 1.35, 3.0));
+    q.audio_tracks[0].items.push(clip(101, 1.35, 1.0, 4.35));
+    let w = sequence_words(&q, &transcripts());
+    let today: Vec<_> = w.iter().filter(|x| x.text == "today").collect();
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].clip, ClipId(100));
+    // the same cut with the second clip moved away from the first: both sides play enough of it
+    q.audio_tracks[0].items[1].start = s(4.0);
+    let w = sequence_words(&q, &transcripts());
+    assert_eq!(w.iter().filter(|x| x.text == "today").count(), 2);
+}
+
 #[test]
 fn speed_scales_word_times() {
     let mut q = seq();
@@ -131,12 +179,12 @@ fn duplicate_tracks_read_once_and_disabled_or_reversed_clips_are_silent() {
 #[test]
 fn two_clips_of_the_same_media_repeat_words_in_edit_order() {
     let mut q = seq();
-    // "rivers." twice: media 5.3–5.9 at 0 s and again at 1 s
-    q.audio_tracks[0].items.push(clip(100, 0.0, 1.0, 5.2));
-    q.audio_tracks[0].items.push(clip(101, 1.0, 1.0, 5.2));
+    // "rivers." twice: media 5.3–5.9 at 0 s and again at 1 s (the clips start 0.02 s into "about")
+    q.audio_tracks[0].items.push(clip(100, 0.0, 1.0, 5.28));
+    q.audio_tracks[0].items.push(clip(101, 1.0, 1.0, 5.28));
     let w = sequence_words(&q, &transcripts());
     assert_eq!(texts(&w), ["rivers.", "rivers."]);
-    assert_eq!(w[1].start, s(1.1));
+    assert_eq!(w[1].start, s(1.02));
     assert_eq!(w[1].clip, ClipId(101));
 }
 
