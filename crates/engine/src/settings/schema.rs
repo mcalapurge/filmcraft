@@ -188,6 +188,9 @@ const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal",
 
 const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
 
+/// Platform Overlay apps (product names, as the monitor's menus show them).
+const OVERLAY_PLATFORMS: &[(&str, &str)] = &[("tiktok", "TikTok"), ("shorts", "YouTube Shorts"), ("reels", "Instagram Reels")];
+
 const TRACKS: &[(&str, &str)] = &[("useFile", "Use File"), ("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
 
 pub const DURATION_UNITS: &[(&str, &str)] = &[("frames", "Frames"), ("seconds", "Seconds")];
@@ -527,6 +530,16 @@ pub(super) static CATEGORIES: &[Category] = &[
             f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),
             Row::Note(
                 "Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.",
+            ),
+            Row::Group(
+                "Platform Overlay",
+                &[
+                    b("playback.platformOverlay", "Show platform overlay in the Program Monitor", true),
+                    sub("playback.overlayPlatform", "Platform", Kind::Choice(OVERLAY_PLATFORMS), "playback.platformOverlay", true),
+                    Row::Note(
+                        "Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).",
+                    ),
+                ],
             ),
         ],
     },

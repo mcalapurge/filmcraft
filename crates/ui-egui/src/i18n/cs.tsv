@@ -3633,3 +3633,13 @@
 	Could not check for updates:\n{error}	Aktualizace se nepodařilo zkontrolovat:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je nejnovější dostupná verze.
 	Looks for a newer FilmCraft release and offers to update.	Vyhledá novější vydání FilmCraftu a nabídne aktualizaci.
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Překryv platformy
+	Show Platform Overlay	Zobrazit překryv platformy
+	Hide Platform Overlay	Skrýt překryv platformy
+	Platform Overlay (right-click to choose the app)	Překryv platformy (pravým tlačítkem vyberte aplikaci)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Zobrazit překryv platformy v programovém monitoru
+	Platform	Platforma
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Vykreslí přes obraz tlačítka, titulky a navigační lištu aplikace a její bezpečnou zónu, aby titulky a obličeje zůstaly volné. Přepíná se také tlačítkem telefonu v ovládání přehrávání programového monitoru (pravým tlačítkem vyberete aplikaci).

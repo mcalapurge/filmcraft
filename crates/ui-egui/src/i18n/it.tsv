@@ -3649,3 +3649,13 @@
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Sovrapposizione piattaforma
+	Show Platform Overlay	Mostra sovrapposizione piattaforma
+	Hide Platform Overlay	Nascondi sovrapposizione piattaforma
+	Platform Overlay (right-click to choose the app)	Sovrapposizione piattaforma (clic destro per scegliere l'app)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Mostra sovrapposizione piattaforma nel monitor di programma
+	Platform	Piattaforma
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Disegna sopra l'immagine i pulsanti, le didascalie e la barra di navigazione dell'app e la sua zona sicura, così titoli e volti restano liberi. Si attiva anche con il pulsante del telefono nei controlli di trasporto del monitor di programma (clic destro per scegliere l'app).

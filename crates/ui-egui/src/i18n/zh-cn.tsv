@@ -3652,3 +3652,13 @@
 	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
 	Change Sequence Settings	更改序列设置
 	Keep Existing Settings	保留现有设置
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	平台叠加层
+	Show Platform Overlay	显示平台叠加层
+	Hide Platform Overlay	隐藏平台叠加层
+	Platform Overlay (right-click to choose the app)	平台叠加层（右键单击选择应用）
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	在节目监视器中显示平台叠加层
+	Platform	平台
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	在画面上绘制应用的按钮、字幕和导航栏及其安全区，让标题和人脸不被遮挡。也可用节目监视器播放控件中的手机按钮切换（右键单击选择应用）。

@@ -35,6 +35,7 @@ pub mod motion_path;
 pub mod multicam;
 pub mod notes;
 pub mod panel_state;
+pub mod platform_overlay;
 pub mod presets;
 pub mod project;
 pub mod project_dialogs;

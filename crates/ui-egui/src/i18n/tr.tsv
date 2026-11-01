@@ -3626,3 +3626,13 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 bir donanım kodlayıcısı gerektirir; bu makinede hiçbiri bulunamadı ve FilmCraft henüz yazılımsal AV1 kodlayıcıya sahip değil.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım kod çözme: Otomatik, desteklediği akışlar için sistemin video kod çözücüsünü (macOS'ta VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API), diğer her şey veya donanım başarısız olduğunda ise FilmCraft'ın kendi kod çözücüsünü kullanır. Zaten açık olan medya yeniden açılana kadar kod çözücüsünü korur.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Denetim sunucusu devre dışı: FILMCRAFT_CONTROL_TOKEN 64 rastgele onaltılık karakter içermelidir (bkz. docs/control-protocol.md)
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Platform Katmanı
+	Show Platform Overlay	Platform Katmanını Göster
+	Hide Platform Overlay	Platform Katmanını Gizle
+	Platform Overlay (right-click to choose the app)	Platform Katmanı (uygulamayı seçmek için sağ tıklayın)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Program Monitöründe Platform Katmanını Göster
+	Platform	Platform
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Başlıklar ve yüzler açıkta kalsın diye uygulamanın düğmelerini, altyazılarını, gezinme çubuğunu ve güvenli alanını görüntünün üzerine çizer. Program Monitörünün aktarım denetimlerindeki telefon düğmesiyle de açılıp kapatılır (uygulamayı seçmek için sağ tıklayın).

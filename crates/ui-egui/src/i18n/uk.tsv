@@ -370,3 +370,13 @@
 	• Preset: {preset}	• Набір налаштувань: {preset}
 	• Range: {range}	• Діапазон: {range}
 	Added {n} sequences to the export queue	До черги експорту додано секвенцій: {n}
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Накладення платформи
+	Show Platform Overlay	Показати накладення платформи
+	Hide Platform Overlay	Сховати накладення платформи
+	Platform Overlay (right-click to choose the app)	Накладення платформи (клацніть правою кнопкою, щоб вибрати застосунок)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Показувати накладення платформи в моніторі програми
+	Platform	Платформа
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Малює поверх зображення кнопки, підписи й панель навігації застосунку та його безпечну зону, щоб титри й обличчя лишалися відкритими. Також перемикається кнопкою телефона в елементах керування відтворенням монітора програми (клацніть правою кнопкою, щоб вибрати застосунок).

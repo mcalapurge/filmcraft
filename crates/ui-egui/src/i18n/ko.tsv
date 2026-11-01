@@ -3644,3 +3644,13 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	플랫폼 오버레이
+	Show Platform Overlay	플랫폼 오버레이 표시
+	Hide Platform Overlay	플랫폼 오버레이 숨기기
+	Platform Overlay (right-click to choose the app)	플랫폼 오버레이(오른쪽 클릭으로 앱 선택)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	프로그램 모니터에 플랫폼 오버레이 표시
+	Platform	플랫폼
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	앱의 버튼, 캡션, 탐색 막대와 안전 영역을 화면 위에 그려 제목과 얼굴이 가려지지 않게 합니다. 프로그램 모니터의 재생 컨트롤에 있는 전화 버튼으로도 켜고 끌 수 있습니다(오른쪽 클릭으로 앱 선택).

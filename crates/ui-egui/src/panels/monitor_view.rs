@@ -5,7 +5,8 @@
 //! rulers, guides (dragged out of the rulers, Add
 //! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences), Snap in Program
 //! Monitor (graphic drags snap to guides, the frame edges and center) and Transparency Grid (a
-//! checkerboard behind the picture shows its transparent areas).
+//! checkerboard behind the picture shows its transparent areas) and Platform Overlay (a short-video
+//! app's interface and safe zone over the picture, [`super::platform_overlay`]).
 //!
 //! Everything is [`MonitorView`] state (serde: `ui.inspect`, `ui.set {"program": {…}}`) changed
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
@@ -26,7 +27,7 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::frames::Rgba;
 use crate::panels::monitor::Which;
-use crate::state::{DisplayMode, Guide, GuideDialog, MonitorView, PlaybackRes, Tool};
+use crate::state::{DisplayMode, Guide, GuideDialog, MonitorView, OverlayPlatform, PlaybackRes, Tool};
 use crate::theme::Tokens;
 
 /// Magnification levels (View ▸ Magnification and the monitor zoom menu).
@@ -128,6 +129,13 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if let Some(d) = rest.strip_prefix("display.") {
         return Some(set_display(app, w, d));
     }
+    if let Some(k) = rest.strip_prefix("platformOverlay.") {
+        let platform = OverlayPlatform::from_key(k)?;
+        let v = view_mut(app, w);
+        v.overlay_platform = platform;
+        v.platform_overlay = true;
+        return Some(persist_overlay(app, w).map(|_| json!({"monitor": pfx, "platformOverlay": true, "platform": platform.key()})));
+    }
     if let Some(z) = rest.strip_prefix("magnification.") {
         let zoom = if z == "fit" { None } else { Some(ZOOMS.iter().find(|(n, _)| *n == z)?.1) };
         let v = view_mut(app, w);
@@ -145,6 +153,22 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let v = view_mut(app, w);
             v.safe_margins = toggled(v.safe_margins, params);
             Ok(json!({"monitor": pfx, "safeMargins": v.safe_margins}))
+        }
+        "platformOverlay" => {
+            let platform = match params.get("platform").and_then(Value::as_str) {
+                Some(k) => match OverlayPlatform::from_key(k) {
+                    Some(p) => Some(p),
+                    None => return Some(Err(format!("unknown platform `{k}` (tiktok, shorts or reels)"))),
+                },
+                None => None,
+            };
+            let v = view_mut(app, w);
+            v.platform_overlay = toggled(v.platform_overlay, params);
+            if let Some(p) = platform {
+                v.overlay_platform = p;
+            }
+            let r = json!({"monitor": pfx, "platformOverlay": v.platform_overlay, "platform": v.overlay_platform.key()});
+            persist_overlay(app, w).map(|_| r)
         }
         "transparencyGrid" => {
             let v = view_mut(app, w);
@@ -244,6 +268,34 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     Some(r)
 }
 
+/// The Program monitor's Platform Overlay is a preference (Settings ▸ Playback ▸ Platform
+/// Overlay), so a change from the transport or the menus is remembered between launches. The
+/// Source monitor's is not.
+fn persist_overlay(app: &mut FilmcraftApp, w: Which) -> Result<(), String> {
+    if w != Which::Program {
+        return Ok(());
+    }
+    let v = &app.ui.program;
+    let p = &app.session.prefs.playback;
+    if p.platform_overlay == v.platform_overlay && p.overlay_platform == v.overlay_platform.key() {
+        return Ok(());
+    }
+    let values = json!({"playback.platformOverlay": v.platform_overlay, "playback.overlayPlatform": v.overlay_platform.key()});
+    app.session.execute("prefs.set", json!({ "values": values })).map(|_| ()).map_err(|e| format!("saving preferences: {e}"))
+}
+
+/// Take the Program monitor's Platform Overlay from the preferences (at startup and when they
+/// change); an unknown platform keeps the current one.
+pub fn overlay_from_prefs(app: &mut FilmcraftApp) {
+    let p = &app.session.prefs.playback;
+    let (on, platform) = (p.platform_overlay, OverlayPlatform::from_key(&p.overlay_platform));
+    let v = &mut app.ui.program;
+    v.platform_overlay = on;
+    if let Some(platform) = platform {
+        v.overlay_platform = platform;
+    }
+}
+
 fn set_display(app: &mut FilmcraftApp, w: Which, d: &str) -> Result<Value, String> {
     if d == "multicam" {
         app.ui.program.multicam = true;
@@ -304,12 +356,16 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
         };
         return Some(v.display_mode() == Some(*mode));
     }
+    if let Some(k) = rest.strip_prefix("platformOverlay.") {
+        return OverlayPlatform::from_key(k).map(|p| v.platform_overlay && v.overlay_platform == p);
+    }
     if let Some(z) = rest.strip_prefix("magnification.") {
         return Some(if z == "fit" { v.zoom.is_none() } else { ZOOMS.iter().find(|(n, _)| *n == z).is_some_and(|(_, f)| v.zoom == Some(*f)) });
     }
     match rest {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
+        "platformOverlay" => Some(v.platform_overlay),
         "transparencyGrid" => Some(v.transparency_grid),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
@@ -821,6 +877,13 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "snapInProgramMonitor", tl!("Snap in Program Monitor"), v.snap);
     }
     pick(ui, &mut out, "transparencyGrid", tl!("Transparency Grid"), v.transparency_grid);
+    ui.menu_button(tl!("Platform Overlay"), |ui| {
+        pick(ui, &mut out, "platformOverlay", tl!("Show Platform Overlay"), v.platform_overlay);
+        ui.separator();
+        for p in OverlayPlatform::ALL {
+            pick(ui, &mut out, &format!("platformOverlay.{}", p.key()), p.name(), v.platform_overlay && v.overlay_platform == p);
+        }
+    });
     ui.separator();
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {
@@ -830,7 +893,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         }
         // the menu stays open for the toggles; a display mode, a resolution and Clear Guides are
         // choices that close it
-        if clicked && (key.starts_with("display.") || key.contains("Res.") || key == "clearGuides") {
+        if clicked && (key.starts_with("display.") || key.contains("Res.") || key.starts_with("platformOverlay.") || key == "clearGuides") {
             ui.close();
         }
     }

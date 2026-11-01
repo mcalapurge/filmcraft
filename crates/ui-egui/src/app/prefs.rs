@@ -106,6 +106,12 @@ impl FilmcraftApp {
             i18n::set_current(self.ui.language);
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
         }
+        if prev
+            .as_ref()
+            .is_none_or(|q| q.playback.platform_overlay != p.playback.platform_overlay || q.playback.overlay_platform != p.playback.overlay_platform)
+        {
+            crate::panels::monitor_view::overlay_from_prefs(self);
+        }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
         let hardware_changed = prev.as_ref().is_none_or(|q| q.audio_hardware != p.audio_hardware);

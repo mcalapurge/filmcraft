@@ -101,6 +101,12 @@ pub struct PlaybackPrefs {
     /// or `off` (always FilmCraft's own decoders). Media already open keeps its decoder until it
     /// is reopened.
     pub hardware_decoding: String,
+    /// "Show platform overlay": the Program monitor draws a short-video app's interface and safe
+    /// zone over the picture. The monitor's transport button and View ▸ Platform Overlay change it
+    /// too, so it is remembered between launches. Off by default.
+    pub platform_overlay: bool,
+    /// "Platform": the app the overlay mocks up, `tiktok` (default), `shorts` or `reels`.
+    pub overlay_platform: String,
 }
 
 impl Default for PlaybackPrefs {
@@ -114,6 +120,8 @@ impl Default for PlaybackPrefs {
             disable_video_in_background: true,
             draft_decode: false,
             hardware_decoding: "auto".into(),
+            platform_overlay: false,
+            overlay_platform: "tiktok".into(),
         }
     }
 }

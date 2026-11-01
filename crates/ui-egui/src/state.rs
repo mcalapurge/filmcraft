@@ -305,6 +305,39 @@ impl DisplayMode {
     }
 }
 
+/// The short-video app whose interface the Platform Overlay mocks up over the monitor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayPlatform {
+    #[default]
+    Tiktok,
+    Shorts,
+    Reels,
+}
+
+impl OverlayPlatform {
+    pub const ALL: [OverlayPlatform; 3] = [OverlayPlatform::Tiktok, OverlayPlatform::Shorts, OverlayPlatform::Reels];
+    /// Command suffix (`view.platformOverlay.<key>`).
+    pub fn key(self) -> &'static str {
+        match self {
+            OverlayPlatform::Tiktok => "tiktok",
+            OverlayPlatform::Shorts => "shorts",
+            OverlayPlatform::Reels => "reels",
+        }
+    }
+    /// Product name (not translated).
+    pub fn name(self) -> &'static str {
+        match self {
+            OverlayPlatform::Tiktok => "TikTok",
+            OverlayPlatform::Shorts => "YouTube Shorts",
+            OverlayPlatform::Reels => "Instagram Reels",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.key() == key)
+    }
+}
+
 /// Monitor guide (frame pixels): `vertical` = a line at x = `position`.
 pub type Guide = filmcraft_engine::autosave::Guide;
 
@@ -325,6 +358,10 @@ pub struct MonitorView {
     /// length (start, end), set with the zoom bar under the ruler; None = all of it.
     pub time_zoom: Option<[f64; 2]>,
     pub safe_margins: bool,
+    /// Platform Overlay: a mock-up of a short-video app's buttons and captions, and its safe
+    /// zone, over the picture (`overlay_platform` picks the app).
+    pub platform_overlay: bool,
+    pub overlay_platform: OverlayPlatform,
     /// Transparency Grid: a checkerboard behind the picture shows its transparent areas.
     pub transparency_grid: bool,
     pub show_transport: bool,
@@ -353,6 +390,8 @@ impl Default for MonitorView {
             pan: [0.0, 0.0],
             time_zoom: None,
             safe_margins: false,
+            platform_overlay: false,
+            overlay_platform: OverlayPlatform::Tiktok,
             transparency_grid: false,
             show_transport: true,
             // Optional buttons (Loop, Go to Previous/Next Edit Point) are available from the editor

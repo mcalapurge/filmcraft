@@ -166,15 +166,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
         monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
     }
-    if mv.safe_margins {
-        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
-            let r = Rect::from_center_size(pic.center(), pic.size() * f);
-            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
-        }
-        let c = pic.center();
-        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-    }
+    draw_overlays(ui, mv, pic, video_area, compare, t.text_dim);
     if display != DisplayMode::Composite && !compare {
         let label = match display {
             DisplayMode::Composite => tl!("Composite"),
@@ -187,6 +179,23 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             DisplayMode::VideoAndWaveform => tl!("Video and Waveform"),
         };
         ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
+    }
+}
+
+/// Safe Margins and the Platform Overlay over the picture.
+fn draw_overlays(ui: &egui::Ui, mv: &crate::state::MonitorView, pic: Rect, video_area: Rect, compare: bool, label: Color32) {
+    if mv.safe_margins {
+        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
+            let r = Rect::from_center_size(pic.center(), pic.size() * f);
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
+        }
+        let c = pic.center();
+        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+    }
+    if mv.platform_overlay && !compare {
+        crate::panels::platform_overlay::paint(ui.painter(), pic, ui.clip_rect(), mv.overlay_platform);
+        ui.painter().text(video_area.min + vec2(8.0, 6.0), Align2::LEFT_TOP, mv.overlay_platform.name(), Tokens::ui(10.0), label);
     }
 }
 
@@ -1069,6 +1078,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     let mut buttons = buttons;
     if !src {
         buttons.push((Icon::Loop, "playback.loop", tl!("Loop")));
+        buttons.push((Icon::Phone, "view.platformOverlay", tl!("Platform Overlay (right-click to choose the app)")));
     }
     let hidden = monitor_view::view(app, which).transport_hidden.clone();
     let all_buttons = buttons.clone();
@@ -1157,6 +1167,12 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         egui::Popup::menu(&response).show(|ui| {
             for index in &fit.overflow {
                 let Some((_, command, label)) = buttons.get(*index) else { continue };
+                if *command == "view.platformOverlay" {
+                    // no right-click in a menu: the apps are a submenu
+                    let sub = ui.menu_button(tl!("Platform Overlay"), |ui| platform_menu(app, ui, which));
+                    app.auto.add_response(&format!("{prefix}.transport.{command}"), &sub.response, tl!("Platform Overlay"));
+                    continue;
+                }
                 let selected = match *command {
                     "media.toggleProxies" => Some(app.session.media.use_proxies()),
                     "playback.loop" => Some(transport_loop_on(app, which == Which::Source)),
@@ -1180,10 +1196,11 @@ fn transport_loop_on(app: &FilmcraftApp, source: bool) -> bool {
     if source { app.source_playback.clock.looping } else { app.playback.looping }
 }
 
-fn transport_is_lit(command: &str, proxies_enabled: bool, loop_enabled: bool) -> bool {
+fn transport_is_lit(command: &str, proxies_enabled: bool, loop_enabled: bool, overlay_on: bool) -> bool {
     match command {
         "media.toggleProxies" => proxies_enabled,
         "playback.loop" => loop_enabled,
+        "view.platformOverlay" => overlay_on,
         _ => false,
     }
 }
@@ -1198,8 +1215,15 @@ fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefi
     }
     let size = if matches!(command, "playback.toggle" | "source.playback.toggle") { 20.0 } else { 18.0 };
     // Loop shows as active (accent) while looping is on; both monitors use this command id, so check the prefix.
-    let loop_enabled = transport_loop_on(app, prefix.starts_with("source"));
-    let color = if transport_is_lit(command, app.session.media.use_proxies(), loop_enabled) {
+    let source = prefix.starts_with("source");
+    let loop_enabled = transport_loop_on(app, source);
+    let which = if source { Which::Source } else { Which::Program };
+    let overlay_on = monitor_view::view(app, which).platform_overlay;
+    if command == "view.platformOverlay" {
+        // right-click picks the app the overlay mocks up
+        response.context_menu(|ui| platform_menu(app, ui, which));
+    }
+    let color = if transport_is_lit(command, app.session.media.use_proxies(), loop_enabled, overlay_on) {
         t.accent
     } else if response.hovered() {
         t.tab_text_active
@@ -1208,6 +1232,32 @@ fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefi
     };
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(size, size)), icon, color);
     response.clicked()
+}
+
+/// The Platform Overlay button's context menu: one entry per app, the shown one ticked.
+fn platform_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which) {
+    let prefix = monitor_view::prefix(which);
+    let v = monitor_view::view(app, which);
+    let (on, current) = (v.platform_overlay, v.overlay_platform);
+    for p in crate::state::OverlayPlatform::ALL {
+        let response = ui.selectable_label(on && current == p, p.name());
+        app.auto.add_response(&format!("{prefix}.transport.platformOverlay.{}", p.key()), &response, p.name());
+        if response.clicked() {
+            if let Some(Err(e)) = monitor_view::route(app, &format!("view.platformOverlay.{}", p.key()), &json!({"monitor": prefix})) {
+                app.ui.status = e;
+            }
+            ui.close();
+        }
+    }
+    ui.separator();
+    let response = ui.selectable_label(false, tl!("Hide Platform Overlay"));
+    app.auto.add_response(&format!("{prefix}.transport.platformOverlay.off"), &response, "Hide Platform Overlay");
+    if response.clicked() {
+        if let Some(Err(e)) = monitor_view::route(app, "view.platformOverlay", &json!({"monitor": prefix, "enabled": false})) {
+            app.ui.status = e;
+        }
+        ui.close();
+    }
 }
 
 fn invoke_transport(app: &mut FilmcraftApp, ctx: &egui::Context, which: Which, command: &str) {
@@ -1305,24 +1355,89 @@ mod tests {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let ctx = egui::Context::default();
         for (source, params) in [(false, json!({"monitor": "program"})), (true, json!({"monitor": "source"}))] {
-            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source)));
+            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source), false));
             crate::menus::invoke(&mut app, &ctx, "playback.loop", params.clone()).unwrap();
-            assert!(transport_is_lit("playback.loop", false, transport_loop_on(&app, source)), "on after one toggle (source: {source})");
+            assert!(transport_is_lit("playback.loop", false, transport_loop_on(&app, source), false), "on after one toggle (source: {source})");
             assert!(transport_loop_on(&app, source) != transport_loop_on(&app, !source), "only that monitor loops");
             crate::menus::invoke(&mut app, &ctx, "playback.loop", params).unwrap();
-            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source)), "off after the second (source: {source})");
+            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source), false), "off after the second (source: {source})");
         }
     }
 
     #[test]
     fn loop_transport_is_lit_only_while_looping() {
-        assert!(!transport_is_lit("playback.loop", false, false));
-        assert!(transport_is_lit("playback.loop", false, true));
+        assert!(!transport_is_lit("playback.loop", false, false, false));
+        assert!(transport_is_lit("playback.loop", false, true, false));
 
-        assert!(!transport_is_lit("media.toggleProxies", false, true));
-        assert!(transport_is_lit("media.toggleProxies", true, false));
+        assert!(!transport_is_lit("media.toggleProxies", false, true, false));
+        assert!(transport_is_lit("media.toggleProxies", true, false, false));
 
-        assert!(!transport_is_lit("playback.toggle", true, true));
+        assert!(!transport_is_lit("playback.toggle", true, true, false));
+    }
+
+    #[test]
+    fn platform_overlay_toggles_from_the_program_transport_and_picks_an_app() {
+        use crate::state::OverlayPlatform;
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        assert!(!app.ui.program.platform_overlay);
+        invoke_transport(&mut app, &ctx, Which::Program, "view.platformOverlay");
+        assert!(app.ui.program.platform_overlay && !app.ui.source.platform_overlay, "only the Program monitor");
+        assert!(transport_is_lit("view.platformOverlay", false, false, app.ui.program.platform_overlay));
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Tiktok);
+        // choosing an app turns the overlay on
+        invoke_transport(&mut app, &ctx, Which::Program, "view.platformOverlay");
+        assert!(!app.ui.program.platform_overlay);
+        let r = crate::menus::invoke(&mut app, &ctx, "view.platformOverlay.reels", json!({"monitor": "program"})).unwrap();
+        assert_eq!(r, json!({"monitor": "program", "platformOverlay": true, "platform": "reels"}));
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Reels);
+        assert_eq!(crate::panels::monitor_view::checked(&app, "view.platformOverlay.reels"), Some(true));
+        assert_eq!(crate::panels::monitor_view::checked(&app, "view.platformOverlay.tiktok"), Some(false));
+        // explicit state and platform; an unknown platform is refused and changes nothing
+        crate::menus::invoke(&mut app, &ctx, "view.platformOverlay", json!({"monitor": "program", "enabled": true, "platform": "shorts"})).unwrap();
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Shorts);
+        assert!(crate::menus::invoke(&mut app, &ctx, "view.platformOverlay", json!({"monitor": "program", "platform": "vine"})).is_err());
+        assert!(app.ui.program.platform_overlay);
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Shorts);
+        assert!(crate::menus::invoke(&mut app, &ctx, "view.platformOverlay.vine", json!({})).is_err());
+        // serde round trip (ui.inspect / ui.set and saved workspaces)
+        let v = serde_json::to_value(&app.ui.program).unwrap();
+        assert_eq!(v["platform_overlay"], json!(true));
+        assert_eq!(v["overlay_platform"], json!("shorts"));
+    }
+
+    #[test]
+    fn platform_overlay_is_a_preference_both_ways() {
+        use crate::state::OverlayPlatform;
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        app.apply_prefs(&ctx);
+        assert!(!app.ui.program.platform_overlay, "off by default");
+        // the Program transport and menus write the preference
+        crate::menus::invoke(&mut app, &ctx, "view.platformOverlay.reels", json!({"monitor": "program"})).unwrap();
+        assert!(app.session.prefs.playback.platform_overlay);
+        assert_eq!(app.session.prefs.playback.overlay_platform, "reels");
+        invoke_transport(&mut app, &ctx, Which::Program, "view.platformOverlay");
+        assert!(!app.session.prefs.playback.platform_overlay);
+        assert_eq!(app.session.prefs.playback.overlay_platform, "reels", "turning it off keeps the app");
+        // the Source monitor's overlay is not a preference
+        crate::menus::invoke(&mut app, &ctx, "view.platformOverlay", json!({"monitor": "source"})).unwrap();
+        assert!(app.ui.source.platform_overlay && !app.session.prefs.playback.platform_overlay);
+        // Settings ▸ Playback reaches the monitor
+        app.apply_prefs(&ctx);
+        app.session.execute("prefs.set", json!({"values": {"playback.platformOverlay": true, "playback.overlayPlatform": "shorts"}})).unwrap();
+        app.apply_prefs(&ctx);
+        assert!(app.ui.program.platform_overlay);
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Shorts);
+        assert!(app.session.execute("prefs.set", json!({"key": "playback.overlayPlatform", "value": "vine"})).is_err());
+        // a restart with the saved preferences comes up with the overlay on
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        let mut app = FilmcraftApp::new(restarted);
+        app.apply_prefs(&ctx);
+        assert!(app.ui.program.platform_overlay);
+        assert_eq!(app.ui.program.overlay_platform, OverlayPlatform::Shorts);
     }
 
     #[test]

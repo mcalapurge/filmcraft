@@ -3677,3 +3677,13 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Superposición de plataforma
+	Show Platform Overlay	Mostrar superposición de plataforma
+	Hide Platform Overlay	Ocultar superposición de plataforma
+	Platform Overlay (right-click to choose the app)	Superposición de plataforma (clic derecho para elegir la app)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Mostrar superposición de plataforma en el monitor de programa
+	Platform	Plataforma
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Dibuja sobre la imagen los botones, textos y barra de navegación de la app y su zona segura, para que títulos y caras queden libres. También se activa con el botón del teléfono en los controles de transporte del monitor de programa (clic derecho para elegir la app).

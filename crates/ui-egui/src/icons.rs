@@ -125,6 +125,8 @@ pub enum Icon {
     Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
+    /// Platform Overlay: a phone with a column of buttons down its right side.
+    Phone,
 }
 
 pub struct Pen16<'a> {
@@ -785,6 +787,14 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
             pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
         }
+        Phone => {
+            pen.rect(4.0, 1.5, 12.0, 14.5);
+            pen.line(&[(7.0, 3.2), (9.0, 3.2)]);
+            pen.dot(10.0, 7.0, 0.8);
+            pen.dot(10.0, 9.2, 0.8);
+            pen.dot(10.0, 11.4, 0.8);
+            pen.line(&[(5.8, 12.2), (8.0, 12.2)]);
+        }
     }
 }
 
@@ -920,6 +930,7 @@ mod tests {
         Network,
         Clock,
         Eyedropper,
+        Phone,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is

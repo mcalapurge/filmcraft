@@ -3621,3 +3621,13 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Nakładka platformy
+	Show Platform Overlay	Pokaż nakładkę platformy
+	Hide Platform Overlay	Ukryj nakładkę platformy
+	Platform Overlay (right-click to choose the app)	Nakładka platformy (kliknij prawym przyciskiem, aby wybrać aplikację)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Pokaż nakładkę platformy w monitorze programu
+	Platform	Platforma
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Rysuje na obrazie przyciski, podpisy i pasek nawigacji aplikacji oraz jej strefę bezpieczną, aby tytuły i twarze pozostały odsłonięte. Przełącza się ją też przyciskiem telefonu w kontrolkach odtwarzania monitora programu (kliknij prawym przyciskiem, aby wybrać aplikację).

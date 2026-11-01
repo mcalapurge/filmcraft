@@ -3606,3 +3606,13 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+
+# Monitors: Platform Overlay (a short-video app's interface over the picture).
+	Platform Overlay	Наложение платформы
+	Show Platform Overlay	Показать наложение платформы
+	Hide Platform Overlay	Скрыть наложение платформы
+	Platform Overlay (right-click to choose the app)	Наложение платформы (правый щелчок — выбор приложения)
+# Settings ▸ Playback ▸ Platform Overlay.
+	Show platform overlay in the Program Monitor	Показывать наложение платформы в мониторе программы
+	Platform	Платформа
+	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Рисует поверх изображения кнопки, подписи и панель навигации приложения и его безопасную зону, чтобы титры и лица оставались открытыми. Также переключается кнопкой телефона в элементах управления воспроизведением монитора программы (правый щелчок — выбор приложения).
