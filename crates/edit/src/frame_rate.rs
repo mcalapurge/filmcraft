@@ -316,6 +316,7 @@ mod tests {
             item: ItemId(1),
             name: format!("c{id}"),
             label: Label::Iris,
+            custom_label_color: None,
             start,
             duration,
             source_in,
