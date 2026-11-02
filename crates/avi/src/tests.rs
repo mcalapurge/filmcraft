@@ -2,14 +2,31 @@ use super::*;
 
 #[test]
 fn stream_number_supports_decimal_and_hex_ids() {
-    assert_eq!(Stream::number(b"10dc"), Some(10));
-    assert_eq!(Stream::number(b"0adc"), Some(10));
-    assert_eq!(Stream::number(b"00dc"), Some(0));
-    assert_eq!(Stream::number(b"09wb"), Some(9));
-    assert_eq!(Stream::number(b"0Fdc"), Some(15));
+    assert_eq!(Stream::number(b"10dc", 10), Some(10));
+    assert_eq!(Stream::number(b"0adc", 16), Some(10));
+    assert_eq!(Stream::number(b"00dc", 10), Some(0));
+    assert_eq!(Stream::number(b"09wb", 10), Some(9));
+    assert_eq!(Stream::number(b"0Fdc", 16), Some(15));
     // `from_str_radix` would take a sign; a chunk id never has one
-    assert_eq!(Stream::number(b"+1dc"), None);
-    assert_eq!(Stream::number(b"ixdc"), None);
+    assert_eq!(Stream::number(b"+1dc", 10), None);
+    assert_eq!(Stream::number(b"ixdc", 16), None);
+    assert_eq!(Stream::number(b"ixdc", 10), None);
+}
+
+/// The radix is one choice per file: in a hex file "10dc" is stream 16 even though "0adc" (stream
+/// 10) is the chunk that shows the file is hex; a decimal file stays decimal.
+#[test]
+fn stream_radix_is_decided_once_per_file() {
+    let hex = [*b"0adc", *b"10dc", *b"00dc"];
+    let radix = Stream::radix(&hex);
+    assert_eq!(radix, 16);
+    assert_eq!(Stream::number(b"0adc", radix), Some(10));
+    assert_eq!(Stream::number(b"10dc", radix), Some(16));
+    let dec = [*b"09dc", *b"10dc", *b"11wb"];
+    let radix = Stream::radix(&dec);
+    assert_eq!(radix, 10);
+    assert_eq!(Stream::number(b"10dc", radix), Some(10));
+    assert_eq!(Stream::radix(&[]), 10);
 }
 
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {

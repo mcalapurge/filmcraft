@@ -154,12 +154,18 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters.
-    fn number(id: &[u8; 4]) -> Option<usize> {
-        // ffmpeg-style writers number streams in decimal ("10dc" = 10), Video for Windows in hex
-        // ("0adc" = 10): a hex letter means hex, two decimal digits mean decimal
+    /// Numbering radix of a file's `movi` chunk ids: ffmpeg-style writers number streams in decimal
+    /// ("10dc" = 10), Video for Windows in hex ("0adc" = 10, "10dc" = 16). Decided once per file: a
+    /// hex letter in any id's number means hex, otherwise decimal. Deciding per chunk would read
+    /// "10dc" as 10 in a hex file that also holds "0adc".
+    fn radix<'a>(ids: impl IntoIterator<Item = &'a [u8; 4]>) -> u32 {
+        let hex = ids.into_iter().any(|id| id[..2].iter().any(|c| matches!(c, b'a'..=b'f' | b'A'..=b'F')));
+        if hex { 16 } else { 10 }
+    }
+
+    /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters, in `radix`.
+    fn number(id: &[u8; 4], radix: u32) -> Option<usize> {
         let [a, b, ..] = *id;
-        let radix = if [a, b].iter().any(|c| matches!(c, b'a'..=b'f' | b'A'..=b'F')) { 16 } else { 10 };
         let d = |c: u8| (c as char).to_digit(radix).map(|v| v as usize);
         Some(d(a)? * radix as usize + d(b)?)
     }
@@ -545,13 +551,15 @@ fn read_idx1<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], at: u64, s
         None => true,
     };
     let base = if relative { movi } else { 0 };
+    let ids: Vec<[u8; 4]> = entries.iter().map(|e| fourcc(e, 0)).collect();
+    let radix = Stream::radix(&ids);
     for e in entries {
         let (id, flags, off, len) = (fourcc(e, 0), le32(e, 4), u64::from(le32(e, 8)), le32(e, 12));
         // AVIIF_LIST entries (`rec ` lists) and palette changes carry no samples
         if flags & 1 != 0 || &id[2..] == b"pc" {
             continue;
         }
-        let Some(s) = Stream::number(&id).and_then(|n| streams.get_mut(n)) else { continue };
+        let Some(s) = Stream::number(&id, radix).and_then(|n| streams.get_mut(n)) else { continue };
         let Some(offset) = base.checked_add(off).and_then(|o| o.checked_add(8)).filter(|o| o.checked_add(u64::from(len)).is_some_and(|end| end <= src.len()))
         else {
             continue;
@@ -563,20 +571,42 @@ fn read_idx1<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], at: u64, s
 /// Append the data chunks of a `movi` list (`[from, to)`) to the tables of the streams `want`
 /// picks, in file order.
 fn scan<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], want: &dyn Fn(usize) -> bool, from: u64, to: u64, depth: u32) {
+    let mut ids = Vec::new();
+    movi_ids(src, from, to, depth, &mut ids);
+    scan_in(src, streams, want, from, to, depth, Stream::radix(&ids));
+}
+
+/// The ids of the data chunks of a `movi` list, for [`Stream::radix`].
+fn movi_ids<S: ByteSource + ?Sized>(src: &S, from: u64, to: u64, depth: u32, out: &mut Vec<[u8; 4]>) {
     if depth >= MAX_DEPTH {
         return;
     }
     for (id, size, data) in children(src, from, to) {
         if id == *b"LIST" {
             if size >= 4 {
-                scan(src, streams, want, data + 4, data + size, depth + 1);
+                movi_ids(src, data + 4, data + size, depth + 1, out);
+            }
+        } else if &id[..2] != b"ix" && &id[2..] != b"pc" {
+            out.push(id);
+        }
+    }
+}
+
+fn scan_in<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], want: &dyn Fn(usize) -> bool, from: u64, to: u64, depth: u32, radix: u32) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    for (id, size, data) in children(src, from, to) {
+        if id == *b"LIST" {
+            if size >= 4 {
+                scan_in(src, streams, want, data + 4, data + size, depth + 1, radix);
             }
             continue;
         }
         if &id[..2] == b"ix" || &id[2..] == b"pc" {
             continue;
         }
-        if let Some(s) = Stream::number(&id).filter(|&n| want(n)).and_then(|n| streams.get_mut(n)) {
+        if let Some(s) = Stream::number(&id, radix).filter(|&n| want(n)).and_then(|n| streams.get_mut(n)) {
             s.chunks.push(Chunk { offset: data, size: u32::try_from(size).unwrap_or(u32::MAX), key: true });
         }
     }
