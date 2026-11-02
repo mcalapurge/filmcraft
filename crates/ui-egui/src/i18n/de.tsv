@@ -3634,7 +3634,6 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
-<<<<<<< HEAD
 
 # Monitors: Platform Overlay (a short-video app's interface over the picture).
 	Platform Overlay	Plattform-Overlay
@@ -3645,7 +3644,6 @@
 	Show platform overlay in the Program Monitor	Plattform-Overlay im Programmmonitor anzeigen
 	Platform	Plattform
 	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Zeichnet die Schaltflächen, Beschriftungen und Navigationsleiste der App sowie ihren sicheren Bereich über das Bild, damit Titel und Gesichter frei bleiben. Lässt sich auch mit der Telefon-Schaltfläche in den Transportsteuerungen des Programmmonitors umschalten (Rechtsklick wählt die App).
-=======
 	Temporal Interpolation	Zeitliche Interpolation
 	Select items to clear	Wähle die zu löschenden Elemente aus
 	A range marker needs a positive duration	Ein Bereichsmarker benötigt eine positive Dauer
@@ -3710,4 +3708,3 @@
 	Previous	Zurück
 	Next	Weiter
 	Enter a valid HH:MM:SS:FF timecode	Gültigen Timecode als HH:MM:SS:FF eingeben
->>>>>>> upstream/main

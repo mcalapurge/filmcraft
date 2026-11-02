@@ -132,7 +132,6 @@ through More, including their selected state and Source/Program routing. A scrol
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
 
-<<<<<<< HEAD
 ## Selective Colour
 
 The Color workspace's Lumetri panel includes Selective Colour, alongside HSL Secondary.
@@ -192,7 +191,6 @@ behavior; no new font files are stored in this repository.
 enables the offscreen wgpu backend even without `FILMCRAFT_UI_SNAPSHOT_DIR`.
 A requested GPU run fails if its render state or effect pipeline is unavailable, rather than
 silently testing the CPU path. Snapshot-only runs still use wgpu to draw the UI.
-=======
 ## Marker properties
 
 Right-click a timeline or Markers-panel marker and choose **Edit Marker…**. The window
@@ -265,7 +263,6 @@ palette manager adds, names, edits, and removes swatches using the shared color 
 or removing a saved swatch preserves already assigned hex values; used colors remain available
 for reuse. `colors.addCustom`, `colors.updateCustom`, and `colors.removeCustom` are undoable.
 Names persist in the project and FilmCraft OTIO metadata; existing sixteen presets are unchanged.
->>>>>>> upstream/main
 
 ### Editable clip duration
 

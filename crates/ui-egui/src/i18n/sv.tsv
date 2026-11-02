@@ -3632,7 +3632,6 @@
 	Check for Updates…	Sök efter uppdateringar…
 	Set Work Area Bar In Point	Ange arbetsområdesfältets in-punkt
 	Set Work Area Bar Out Point	Ange arbetsområdesfältets ut-punkt
-<<<<<<< HEAD
 
 # Monitors: Platform Overlay (a short-video app's interface over the picture).
 	Platform Overlay	Plattformsöverlägg
@@ -3643,7 +3642,6 @@
 	Show platform overlay in the Program Monitor	Visa plattformsöverlägg i programmonitorn
 	Platform	Plattform
 	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Ritar appens knappar, texter och navigeringsfält samt dess säkra zon över bilden så att titlar och ansikten hålls fria. Växlas även med telefonknappen i programmonitorns uppspelningskontroller (högerklicka för att välja app).
-=======
 	FilmCraft Updates	FilmCraft-uppdateringar
 	Center at Cut	Centrera vid snitt
 	Start at Cut	Börja vid snitt
@@ -3748,4 +3746,3 @@
 	Previous	Föregående
 	Next	Nästa
 	Enter a valid HH:MM:SS:FF timecode	Ange en giltig tidskod i formatet HH:MM:SS:FF
->>>>>>> upstream/main

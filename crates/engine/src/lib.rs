@@ -25,11 +25,8 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
-<<<<<<< HEAD
 pub mod live_captions;
-=======
 mod marker_edit;
->>>>>>> upstream/main
 mod marker_export;
 pub mod masks;
 pub mod media_browser;

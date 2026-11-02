@@ -179,29 +179,19 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-<<<<<<< HEAD
-        let verb = if job.label.starts_with("Rendering") {
-            crate::i18n::t(&job.label).to_string()
-        } else if job.label.starts_with("Transcribe") {
-            tl!("Transcribing").to_string()
-        } else if job.label.starts_with("Download") {
-            tl!("Downloading").to_string()
-        } else {
-            tl!("Exporting").to_string()
-        };
-        let progress = p.text(
-            egui::pos2(bar.min.x - 8.0, sb.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{verb}… {:.0}%{left}", f * 100.0),
-            Tokens::ui(11.0),
-            t.text_dim,
-        );
-=======
         let (now, font) = (self.now(), Tokens::ui(11.0));
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let verb = if job.label.starts_with("Rendering") {
+                    crate::i18n::t(&job.label).to_string()
+                } else if job.label.starts_with("Transcribe") {
+                    tl!("Transcribing").to_string()
+                } else if job.label.starts_with("Download") {
+                    tl!("Downloading").to_string()
+                } else {
+                    tl!("Exporting").to_string()
+                };
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
@@ -215,7 +205,6 @@ impl FilmcraftApp {
         widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
         let left = shown.label.clone();
         self.job_text = Some(shown);
->>>>>>> upstream/main
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;

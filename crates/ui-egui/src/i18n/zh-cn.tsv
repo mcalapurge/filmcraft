@@ -3654,7 +3654,6 @@
 	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
 	Change Sequence Settings	更改序列设置
 	Keep Existing Settings	保留现有设置
-<<<<<<< HEAD
 
 # Monitors: Platform Overlay (a short-video app's interface over the picture).
 	Platform Overlay	平台叠加层
@@ -3665,7 +3664,6 @@
 	Show platform overlay in the Program Monitor	在节目监视器中显示平台叠加层
 	Platform	平台
 	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	在画面上绘制应用的按钮、字幕和导航栏及其安全区，让标题和人脸不被遮挡。也可用节目监视器播放控件中的手机按钮切换（右键单击选择应用）。
-=======
 	Temporal Interpolation	时间插值
 	Select items to clear	选择要清除的项目
 	Opens in your web browser: {url}	在网页浏览器中打开：{url}
@@ -3725,4 +3723,3 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
->>>>>>> upstream/main
