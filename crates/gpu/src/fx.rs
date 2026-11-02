@@ -109,13 +109,10 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
-<<<<<<< HEAD
     data: Option<std::sync::Arc<Vec<f32>>>,
-=======
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
->>>>>>> upstream/main
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -123,10 +120,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-<<<<<<< HEAD
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, data: None }
-=======
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, data: None, kernel: Vec::new() }
 }
 
 /// Texels a row of a kernel texture holds.
@@ -159,7 +153,6 @@ fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i3
         size,
     );
     t.create_view(&Default::default())
->>>>>>> upstream/main
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
