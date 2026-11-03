@@ -386,7 +386,7 @@ fn unsupported_effect<'a>(effects: impl IntoIterator<Item = &'a filmcraft_projec
 }
 
 /// Why [`push_item`] renders `item` as a CPU layer, checked in the order its GPU paths are tried.
-fn layer_cause(project: &Project, item: &TrackItem, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Fallback {
+fn layer_cause(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Fallback {
     let mut effects =
         item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)).filter(|_| opts.effects);
     if let Some(why) = unsupported_effect(effects.clone()) {
@@ -400,7 +400,7 @@ fn layer_cause(project: &Project, item: &TrackItem, t: Tick, opts: RenderOptions
         Some(ItemKind::Media(_) | ItemKind::Subclip { .. }) => {}
         _ => return Fallback::NotMedia,
     }
-    if sources.source(item.item).is_some_and(|src| crate::interpolation_blend(item, t, src.info().frame_rate()).is_some()) {
+    if sources.source(item.item).is_some_and(|src| crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_some()) {
         return Fallback::FrameBlending;
     }
     effects.next().map_or(Fallback::ColorManagement, Fallback::effect_values)
@@ -728,7 +728,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
-    crate::fallback::note(Scope::Layer, layer_cause(project, item, t, opts, sources));
+    crate::fallback::note(Scope::Layer, layer_cause(project, seq, item, t, opts, sources));
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
