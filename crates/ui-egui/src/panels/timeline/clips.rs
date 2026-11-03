@@ -191,7 +191,13 @@ pub(super) fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = label_color(app, it.label);
+    let base = it.custom_label_color.map_or_else(
+        || label_color(app, it.label),
+        |c| {
+            let [r, g, b] = c.0;
+            Color32::from_rgb(r, g, b)
+        },
+    );
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).
@@ -266,7 +272,13 @@ pub(super) fn draw_clip(
             Align2::LEFT_CENTER,
             label,
             Tokens::ui(11.5),
-            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
+            if it.custom_label_color.is_some() {
+                readable_on(fill)
+            } else if it.enabled {
+                Color32::from_rgb(0xd9, 0xd9, 0xd9)
+            } else {
+                t.text_faint
+            },
         );
     }
     // fx badge right-aligned in the header (italic-ish "fx")
@@ -345,5 +357,49 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+/// Black or white, whichever has the higher WCAG contrast against `fill` (linearised sRGB relative
+/// luminance), so a custom clip colour never leaves its label below 4.5:1 where either can reach it.
+fn readable_on(fill: Color32) -> Color32 {
+    let lin = |c: u8| {
+        let c = f32::from(c) / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let lum = 0.2126 * lin(fill.r()) + 0.7152 * lin(fill.g()) + 0.0722 * lin(fill.b());
+    // contrast against white is 1.05 / (lum + 0.05), against black (lum + 0.05) / 0.05
+    if (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) { Color32::BLACK } else { Color32::WHITE }
+}
+
+#[cfg(test)]
+mod readable_on_tests {
+    use super::*;
+
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let l = |c: Color32| {
+            let f = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+        let (x, y) = (l(a) + 0.05, l(b) + 0.05);
+        x.max(y) / x.min(y)
+    }
+
+    /// The old weighted-byte threshold put `#D9D9D9` (2.83:1) on a pure red fill.
+    #[test]
+    fn label_on_red_is_black_and_every_fill_is_readable() {
+        assert_eq!(readable_on(Color32::from_rgb(255, 0, 0)), Color32::BLACK);
+        assert_eq!(readable_on(Color32::from_rgb(0, 0, 80)), Color32::WHITE);
+        for r in (0..=255).step_by(15) {
+            for g in (0..=255).step_by(15) {
+                for b in (0..=255).step_by(15) {
+                    let fill = Color32::from_rgb(r, g, b);
+                    assert!(contrast(fill, readable_on(fill)) >= 4.5, "{fill:?}");
+                }
+            }
+        }
     }
 }
