@@ -647,12 +647,12 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
         // media and other pipelines are converted on the CPU (below), and so are blended
-        // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
+        // in-between frames (Frame Blending / Optical Flow on speed-changed or rate-conformed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
-        let plain =
-            (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
-        if !plain && !chain.is_empty() && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none() {
+        let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
+            && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none();
+        if !plain && !chain.is_empty() && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none() {
             let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
             let image = crate::colorman::decode(project, item.item, &frame, n, pipe);
             let (lw, lh) = (image.w, image.h);
