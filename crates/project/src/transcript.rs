@@ -62,6 +62,12 @@ pub struct Speaker {
     pub name: String,
 }
 
+/// Longest speaker name [`Transcript::speaker_name`] hands out, in bytes.
+pub const MAX_SPEAKER_NAME_BYTES: usize = 256;
+
+/// Distinct speakers one transcript can label; [`Transcript::normalize`] drops larger indices.
+pub const MAX_SPEAKERS: u32 = 1024;
+
 /// The transcript of one media item.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -78,9 +84,18 @@ pub struct Transcript {
 impl Transcript {
     /// The speaker name of `word` (`"Speaker 2"` when the label list is short; `None` when the word
     /// has no speaker).
+    ///
+    /// The name is cut to [`MAX_SPEAKER_NAME_BYTES`]: every word of a derived transcript carries a
+    /// copy, so one huge stored name must not be copied into thousands of words.
     pub fn speaker_name(&self, word: &Word) -> Option<String> {
-        let id = word.speaker?;
-        Some(self.speakers.get(id as usize).map(|s| s.name.clone()).unwrap_or_else(|| format!("Speaker {}", u64::from(id) + 1)))
+        let i = word.speaker? as usize;
+        Some(match self.speakers.get(i) {
+            Some(s) => {
+                let end = (0..=MAX_SPEAKER_NAME_BYTES.min(s.name.len())).rev().find(|&e| s.name.is_char_boundary(e)).unwrap_or(0);
+                s.name[..end].to_string()
+            }
+            None => format!("Speaker {}", i + 1),
+        })
     }
 
     /// The text of all words joined by spaces.
@@ -114,30 +129,18 @@ impl Transcript {
                 self.words[i - 1].end = s.max(self.words[i - 1].start);
             }
         }
+        // The largest index sizes the label table, so a single hostile word must not make it
+        // allocate billions of labels: indices past the ceiling lose their speaker.
+        for w in &mut self.words {
+            if w.speaker.is_some_and(|s| s >= MAX_SPEAKERS) {
+                w.speaker = None;
+            }
+        }
         let max = self.words.iter().filter_map(|w| w.speaker).max();
-        if let Some(m) = max.filter(|m| *m < 4096) {
+        if let Some(m) = max {
             while self.speakers.len() <= m as usize {
                 let n = self.speakers.len() + 1;
                 self.speakers.push(Speaker { name: format!("Speaker {n}") });
-            }
-        } else if max.is_some() {
-            // A hostile speaker index must not allocate billions of placeholder labels.
-            // Compact missing indices by identity, keeping their displayed names. Work and
-            // added storage now depend on the words present, never the largest input number.
-            let original_speakers = self.speakers.len();
-            let mut missing = std::collections::BTreeMap::new();
-            for word in &mut self.words {
-                let Some(id) = word.speaker.filter(|id| *id as usize >= original_speakers) else { continue };
-                let index = match missing.get(&id) {
-                    Some(index) => *index,
-                    None => {
-                        let Ok(index) = u32::try_from(self.speakers.len()) else { continue };
-                        self.speakers.push(Speaker { name: format!("Speaker {}", u64::from(id) + 1) });
-                        missing.insert(id, index);
-                        index
-                    }
-                };
-                word.speaker = Some(index);
             }
         }
     }
@@ -183,24 +186,26 @@ mod tests {
     }
 
     #[test]
-    fn hostile_speaker_indices_do_not_size_allocations() {
-        let result = std::panic::catch_unwind(|| {
-            let mut transcript = Transcript::default();
-            for (i, speaker) in [u32::MAX, 0, u32::MAX - 1, u32::MAX].into_iter().enumerate() {
-                let mut word = w("hello", i as i64 * 10, i as i64 * 10 + 5);
-                word.speaker = Some(speaker);
-                transcript.words.push(word);
-            }
-            assert_eq!(transcript.speaker_name(&transcript.words[0]).as_deref(), Some("Speaker 4294967296"));
-            transcript.normalize();
-            transcript.check().unwrap();
-            assert_eq!(transcript.speakers.len(), 3);
-            assert_eq!(transcript.words[0].speaker, transcript.words[3].speaker);
-            assert_ne!(transcript.words[0].speaker, transcript.words[1].speaker);
-            assert_eq!(transcript.speaker_name(&transcript.words[0]).as_deref(), Some("Speaker 4294967296"));
-            assert_eq!(transcript.speaker_name(&transcript.words[1]).as_deref(), Some("Speaker 1"));
-        });
-        assert!(result.is_ok());
+    fn a_huge_speaker_name_is_cut_at_a_character_boundary() {
+        let name = "é".repeat(MAX_SPEAKER_NAME_BYTES); // two bytes each: the cut lands on a boundary
+        let mut t = Transcript { words: vec![w("a", 0, 10)], speakers: vec![Speaker { name: name.clone() }], ..Default::default() };
+        t.words[0].speaker = Some(0);
+        let got = t.speaker_name(&t.words[0]).unwrap();
+        assert_eq!(got.len(), MAX_SPEAKER_NAME_BYTES);
+        assert!(name.starts_with(&got));
+        t.speakers[0].name = "Ann".into();
+        assert_eq!(t.speaker_name(&t.words[0]).as_deref(), Some("Ann"));
+    }
+
+    #[test]
+    fn hostile_speaker_index_does_not_size_the_label_table() {
+        let mut t = Transcript { words: vec![w("a", 0, 10), w("b", 10, 20)], ..Default::default() };
+        t.words[0].speaker = Some(u32::MAX);
+        t.words[1].speaker = Some(MAX_SPEAKERS - 1);
+        t.normalize();
+        assert_eq!(t.words[0].speaker, None);
+        assert_eq!(t.speakers.len(), MAX_SPEAKERS as usize);
+        t.check().unwrap();
     }
 
     #[test]

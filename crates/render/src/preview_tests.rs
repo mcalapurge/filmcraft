@@ -342,3 +342,21 @@ fn gpu_cost_estimation_never_builds_lumetri_payloads() {
     assert!(masked[0].cost_ms > gpu[0].cost_ms);
     crate::lumetri_gpu::EVALUATIONS.with(|count| assert_eq!(count.get(), 0));
 }
+
+#[test]
+fn a_subclip_that_is_its_own_parent_does_not_recurse_forever() {
+    let (mut p, _, ocean, seq) = setup();
+    let sub = p.add_item(
+        "sub",
+        Label::Iris,
+        ItemKind::Subclip { parent: ocean, range: TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), restrict_trims: false },
+        None,
+    );
+    place(&mut p, seq, 0, sub, 0, 24);
+    // a damaged project: the subclip names itself as its parent
+    if let Some(ItemKind::Subclip { parent, .. }) = p.item_mut(sub).map(|i| &mut i.kind) {
+        *parent = sub;
+    }
+    let s = std::thread::Builder::new().stack_size(256 << 10).spawn(move || video_segments(&p, seq).len()).unwrap().join().unwrap();
+    assert_eq!(s, 1);
+}
