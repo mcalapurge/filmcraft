@@ -843,7 +843,7 @@ fn unscaled_nest_matches_a_layer_with_the_same_effects() {
         width: w as usize,
         height: h as usize,
         layers: vec![PlanLayer {
-            fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: ops.clone() })),
+            fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.clone() })),
             ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal)
         }],
     };
@@ -888,7 +888,7 @@ fn nest_steps_match_cpu_plan() {
     let inner_ops: Vec<FxOp> = tint.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 0.5), 200, 150)).collect();
     let inner = vec![
         PlanLayer {
-            fx: Some(Arc::new(LayerFx { size: (200, 150), decimation: 2, ops: inner_ops })),
+            fx: Some(Arc::new(LayerFx { size: (200, 150), decimation: 2, turns: 0, ops: inner_ops })),
             ..PlanLayer::new(yuv_frame(400, 300), Affine::IDENTITY, 1.0, Blend::Normal)
         },
         PlanLayer::new(ramp_layer(120, 80, 1), Affine::motion(Vec2::new(110.0, 70.0), Vec2::new(0.8, 0.8), 12.0, Vec2::new(60.0, 40.0)), 0.9, Blend::Screen),
@@ -1074,7 +1074,8 @@ fn lumetri_full_gpu_matches_cpu() {
             assert!(op.gpu_ok());
             let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
             op.apply(&mut cpu);
-            let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("full GPU effect image");
+            let (_, _, gpu) =
+                compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("full GPU effect image");
             let worst = cpu
                 .px
                 .iter()
@@ -1125,7 +1126,7 @@ fn lumetri_imported_luts_gpu_match_cpu() {
                 assert!(op.gpu_ok());
                 let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
                 op.apply(&mut cpu);
-                let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+                let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).unwrap();
                 let worst = cpu.px.iter().zip(gpu).map(|(a, b)| (a - b).abs() / (1.0 + a.abs())).fold(0.0f32, f32::max);
                 assert!(worst < 0.003, "{param} {working:?}: {worst}");
             }
@@ -1177,7 +1178,7 @@ fn lumetri_gpu_1080p_throughput() {
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
     let e = effect("lumetri", &[("selective_red_hue", fl(50.0)), ("wheel_midtones_l", fl(10.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
-    let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op.clone()] };
+    let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op.clone()] };
     compositor.effect_image(&frame, &fx).unwrap();
     let now = std::time::Instant::now();
     for _ in 0..10 {

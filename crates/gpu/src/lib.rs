@@ -1097,7 +1097,7 @@ impl GpuCompositor {
         let Some(stage) = self.fx.as_mut() else {
             return false;
         };
-        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, ops: ops.to_vec() };
+        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, turns: 0, ops: ops.to_vec() };
         let Some(job) = stage.job(&self.device, &self.queue, &fx, source, &self.dummy) else {
             return false;
         };
@@ -1143,7 +1143,7 @@ impl GpuCompositor {
             return false;
         };
         stage.begin_frame();
-        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, ops: ops.to_vec() };
+        let fx = filmcraft_render::plan::LayerFx { size, decimation: 1, turns: 0, ops: ops.to_vec() };
         let Some(job) = stage.job(&self.device, &self.queue, &fx, source, &self.dummy) else {
             return false;
         };

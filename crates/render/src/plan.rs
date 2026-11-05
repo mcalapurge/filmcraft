@@ -660,7 +660,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
             && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none();
-        if !plain && !chain.is_empty() && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none() {
+        // a display-rotated frame falls through to the CPU path: this one has no turn to apply
+        if turns == 0 && !plain && !chain.is_empty() && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none() {
             let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
             let image = crate::colorman::decode(project, item.item, &frame, n, pipe);
             let (lw, lh) = (image.w, image.h);
@@ -686,7 +687,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                     matrix,
                     opacity: op * extra_opacity,
                     blend: bl,
-                    fx: Some(Arc::new(LayerFx { size: (lw as u32, lh as u32), decimation: 1, ops })),
+                    fx: Some(Arc::new(LayerFx { size: (lw as u32, lh as u32), decimation: 1, turns: 0, ops })),
                     input: None,
                 });
                 return;
