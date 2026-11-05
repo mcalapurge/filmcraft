@@ -31,6 +31,7 @@ pub mod plan;
 pub mod preview;
 pub mod remix;
 pub mod scene;
+mod stretch;
 pub mod track;
 pub mod transitions;
 pub mod vfx;
