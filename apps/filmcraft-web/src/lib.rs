@@ -23,6 +23,8 @@ pub mod api;
 pub mod audio;
 pub mod download_pacing;
 pub mod fs;
+pub mod host;
+pub mod hostmode;
 pub mod import;
 pub mod opfs;
 pub mod recovery;
@@ -89,6 +91,10 @@ pub struct WebApp {
     pub app: FilmcraftApp,
     pub audio: Option<audio::Handle>,
     pub autosave: recovery::Autosave,
+    /// The host bridge in host mode (`?host=parent` / `data-host="page"`): written files go to
+    /// the host instead of downloads, it hears about unsaved changes, and it opens the files it
+    /// sends.
+    pub host: Option<host::Bridge>,
 }
 
 impl eframe::App for WebApp {
@@ -96,7 +102,7 @@ impl eframe::App for WebApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
-    /// Hidden logic pass: host actions, app logic, API replies, jobs, audio, autosave, then IME reset; it does not draw UI.
+    /// Hidden logic pass: host actions, app logic, API replies, jobs, host saves and dirty reports, audio, autosave, then IME reset; it does not draw UI.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
         for f in actions {
@@ -107,6 +113,11 @@ impl eframe::App for WebApp {
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
             ctx.request_repaint();
+        }
+        // In host mode: files written this frame (commands, exports) go to the host, and it
+        // hears when unsaved changes appear or go away.
+        if let Some(host) = &self.host {
+            host.sync(&self.app.session);
         }
         if let Some(a) = &self.audio {
             a.pump();
@@ -132,6 +143,15 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
 
+    // Host modes (`craft-web-host`): `?host=parent`, a same-origin page framing FilmCraft in an
+    // `<iframe>`, opens files in it and stores what it saves (`host`); unframed there is no parent,
+    // so that URL on its own stays the normal app with downloads. `data-host="page"` on the canvas
+    // opts a page in instead: it runs FilmCraft in its own document and talks over DOM
+    // `CustomEvent`s on the canvas. In host mode the host sends the document to edit, so no demo
+    // project opens and nothing from an earlier visit is recovered.
+    let host = host::Bridge::connect(&canvas);
+    let in_host_mode = host.is_some();
+
     let isolated = js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false);
     // Frame rendering runs cooperatively on this thread. wasm threads need a cross-origin
     // isolated page *and* a build with atomics (nightly `build-std`); this build has none.
@@ -141,8 +161,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("opfs", json!(opfs::available()));
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
-    let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
-    let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    let restored = if !in_host_mode && opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
+    let recovered = if in_host_mode || query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
     webcodecs::probe().await;
     // speech models kept in OPFS by earlier sessions (`transcript.models`)
     wasm_bindgen_futures::spawn_local(speech::refresh_installed());
@@ -150,7 +170,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    let demo = !in_host_mode && !query_flag("empty");
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.
@@ -160,7 +180,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         c.instance_descriptor.backends = eframe::wgpu::Backends::GL;
     }
     let runner = eframe::WebRunner::new();
-    runner
+    let host_for_app = host.clone();
+    let started = runner
         .start(
             canvas,
             web_options,
@@ -169,11 +190,19 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());
-                fs::set_on_write(|path, data| {
-                    if let Err(e) = fs::download(path, data) {
-                        log::warn!("download {path}: {e:?}");
+                // Host mode: written files (saved projects, exports, …) are handed to the host
+                // instead of downloading, and it opens the files it sends. Otherwise the app
+                // offers what it writes as a browser download.
+                match &host_for_app {
+                    Some(bridge) => bridge.install(),
+                    None => {
+                        fs::set_on_write(|path, data| {
+                            if let Err(e) = fs::download(path, data) {
+                                log::warn!("download {path}: {e:?}");
+                            }
+                        });
                     }
-                });
+                }
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 session.speech_host = Some(Arc::new(speech::WebSpeech));
@@ -222,10 +251,18 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
-                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
+                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default(), host: host_for_app }))
             }),
         )
-        .await?;
+        .await;
+    // Ready only once the runner is up: starting can still fail after the app is made.
+    if let Some(bridge) = &host {
+        match &started {
+            Ok(()) => bridge.post_ready(),
+            Err(e) => bridge.post_failed(&e.as_string().unwrap_or_else(|| format!("{e:?}"))),
+        }
+    }
+    started?;
     set_info("startupMs", json!(t0.elapsed().as_secs_f64() * 1000.0));
     // keep the runner alive for the page's lifetime
     std::mem::forget(runner);

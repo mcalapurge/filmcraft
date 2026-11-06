@@ -3639,3 +3639,12 @@
 	Show platform overlay in the Program Monitor	Program Monitöründe Platform Katmanını Göster
 	Platform	Platform
 	Draws the app's buttons, captions and navigation bar, and its safe zone, over the picture so titles and faces stay clear of them. Also toggled with the phone button in the Program Monitor's transport controls (right-click it to choose the app).	Başlıklar ve yüzler açıkta kalsın diye uygulamanın düğmelerini, altyazılarını, gezinme çubuğunu ve güvenli alanını görüntünün üzerine çizer. Program Monitörünün aktarım denetimlerindeki telefon düğmesiyle de açılıp kapatılır (uygulamayı seçmek için sağ tıklayın).
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10 bit renk
+	All Intra	Yalnızca intra
+	Every frame a keyframe (edit-friendly, larger files)	Her kare bir anahtar kare (kurgu dostu, daha büyük dosyalar)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	Sekans boyutunda H.264 High 10 (10 bit 4:2:0), sabit kalite CRF 16, AAC 320 kbps; 10 bit bir master
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, her kare bir anahtar kare), CRF 12, AAC 320 kbps; kurgu dostu bir ara dosya
