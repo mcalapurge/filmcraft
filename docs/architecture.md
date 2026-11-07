@@ -321,6 +321,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
+<<<<<<< HEAD
   placed like any layer. A plain nested sequence (same colour settings as its parent, nothing on
   the clip that changes the picture, every layer inside blended normally) puts its own layers into
   the plan. A nested sequence whose effects are all in the GPU set (Lumetri Color on a nest, say)
@@ -330,6 +331,19 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   layers run supported effects as GPU canvas passes. Other standard effects, effect and opacity
   masks, transformed or partially opaque adjustment layers, other nested sequences and non-dissolve transitions are
   rendered on the CPU for that layer or frame
+=======
+  placed like any layer. An adjustment layer that covers the whole frame at 100 % opacity in
+  Normal, unmasked and with only effects from that set, is a step of the plan: its effects run the
+  same way on the composite of the tracks below it, and the result replaces it before the tracks
+  above are drawn. The plan is made for the device that composites it (`plan::DeviceCaps`, part
+  of the monitor's frame key and of the export's renderer pool): on one without an effect stage,
+  or for a frame larger than its textures, the adjustment layer sends the frame to the CPU
+  renderer on the thread that plans it, not on the UI thread or inside a renderer. Other standard
+  effects, effect and opacity masks, the other adjustment layers,
+  nested sequences (except a plain one, whose own layers go into the plan: same frame size and
+  colour settings as its parent, nothing on the clip that changes the picture, every layer inside
+  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
+>>>>>>> upstream/main
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
