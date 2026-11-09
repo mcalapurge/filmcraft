@@ -1,14 +1,19 @@
 //! Colour commands: colour management (`sequence.colorSettings`, `clip.interpretFootage`,
-//! `color.spaces`, `media.colorInfo`), the project LUT library (`lut.*`), Lumetri LUT slots and
+//! `color.spaces`, `media.colorInfo`), the project LUT library (`lut.*`), Color Grading LUT slots and
 //! section switches (`lumetri.*`).
 //!
+<<<<<<< HEAD
 //! Lumetri commands edit the clips named by `clip` or `clips`, else every selected video clip, as
 //! one undo step, adding Lumetri Color where a clip has none (the Lumetri panel edits the whole
 //! selection the same way). The first target is the one the panel shows (see [`lumetri_targets`]).
+=======
+//! Color Grading commands address a clip by `clip` (default: the first selected video clip with
+//! Color Grading, else the first selected video clip — Color Grading is added if missing).
+>>>>>>> upstream/main
 //!
-//! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
-//! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
-//! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
+//! Color Grading Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
+//! Color Grading configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
+//! renders a folder's thumbnail grid (our Color Grading on the procedural preview picture) to a PNG.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackItem, TrackKind};
@@ -46,11 +51,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             interpret,
         ),
         query("color.spaces", "List Colour Spaces", "{}", spaces),
-        query("lumetri.presets", "List Lumetri Presets", r#"{"folder":str?}"#, list_presets),
-        spec("lumetri.applyPreset", "Apply Lumetri Preset", &[], r#"{"name":str,"clips":[id]?}"#, has_seq, apply_preset),
+        query("lumetri.presets", "List Color Grading Presets", r#"{"folder":str?}"#, list_presets),
+        spec("lumetri.applyPreset", "Apply Color Grading Preset", &[], r#"{"name":str,"clips":[id]?}"#, has_seq, apply_preset),
         query(
             "lumetri.presetThumbnails",
-            "Lumetri Preset Thumbnails",
+            "Color Grading Preset Thumbnails",
             r#"{"folder":str?,"names":[str]?,"width":n=160,"columns":n=4,"path":str?}"#,
             preset_thumbnails,
         ),
@@ -73,6 +78,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_seq,
             apply_match,
         ),
+        query("lumetri.exportCube", "Export .cube…", r#"{"clip":id?,"path":str,"size":n=33}"#, export_cube),
         spec(
             "lumetri.resetSelectiveBand",
             "Reset Selective Colour Band",
@@ -83,7 +89,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         spec(
             "lumetri.setSection",
-            "Toggle Lumetri Section",
+            "Toggle Color Grading Section",
             &[],
             r#"{"clip":id?,"clips":[id]?,"section":"basic"|"creative"|"curves"|"wheels"|"hsl"|"selective"|"vignette","on":bool?}"#,
             has_seq,
@@ -183,16 +189,61 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "bytes": text.len()}))
 }
 
+<<<<<<< HEAD
 /// The clips a Lumetri command edits: `clip`, or `clips`, else every selected video clip, in
 /// selection order. The first is the one the Lumetri panel shows.
 pub fn lumetri_targets(s: &Session, p: &Value) -> std::result::Result<Vec<ClipId>, String> {
     let seq = s.active_sequence().ok_or("no active sequence")?;
+=======
+/// `lumetri.exportCube`: the grade of a clip's Color Grading (also the result of `lumetri.applyMatch`)
+/// as a 3D `.cube` LUT: its per-pixel colour pipeline sampled on a `size³` lattice in the sequence's
+/// output encoding, so the table applied to the ungraded frame gives the render. `clip` defaults to
+/// the first selected clip that has Color Grading. The vignette, sharpen and the HSL Secondary denoise
+/// and blur cannot live in a LUT: they are left out and named, with the other effects on the clip,
+/// in `leftOut`. The grade is sampled at the playhead (inside the clip). Nothing in the project
+/// changes.
+fn export_cube(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "lumetri.exportCube";
+    let path = str_p(p, "path").ok_or_else(|| bad(CMD, "need `path`"))?;
+    let size = crate::commands::checked_u32_p(p, "size", CMD)?.unwrap_or(33) as usize;
+    let q = s.active_sequence().ok_or_else(|| bad(CMD, "no active sequence"))?;
+    let has_lumetri = |c: &ClipId| q.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri"));
+    let clip = match clip_p(p, "clip") {
+        Some(c) => c,
+        None if p.get("clip").is_some_and(|v| !v.is_null()) => return Err(bad(CMD, "`clip` must be a clip id")),
+        None => s.state.selection.iter().copied().find(has_lumetri).ok_or_else(|| bad(CMD, "select a clip with Color Grading (or pass `clip`)"))?,
+    };
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {}", clip.0)))?;
+    if !has_lumetri(&clip) {
+        return Err(bad(CMD, "the clip has no enabled Color Grading to export"));
+    }
+    let t = it.effect_time_at(s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start)));
+    let lumetri: Vec<&filmcraft_project::EffectInstance> = it.effects.iter().filter(|e| e.effect == "lumetri").collect();
+    let title: String = it.name.chars().filter(|c| !c.is_control()).collect();
+    let sample = filmcraft_render::lumetri_cube::sample_lumetri(&lumetri, Some(&s.project), t, q.settings.frame_rate.as_f64(), &q.settings.color, size, &title)
+        .map_err(|e| bad(CMD, e))?;
+    let mut left_out: Vec<String> = sample.left_out.iter().map(|n| n.to_string()).collect();
+    for e in it.effects.iter().filter(|e| e.enabled && e.effect != "lumetri") {
+        if let Some(d) = e.def().filter(|d| !d.intrinsic) {
+            left_out.push(d.name.to_string());
+        }
+    }
+    let text = sample.lut.to_cube();
+    s.services.write_file(path, text.as_bytes()).map_err(|e| bad(CMD, format!("{path}: {e}")))?;
+    Ok(json!({"clip": clip.0, "path": path, "size": size, "bytes": text.len(), "leftOut": left_out}))
+}
+
+/// The target clip and the index of its Color Grading effect (applying Color Grading when missing).
+pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+    let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+>>>>>>> upstream/main
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
     let asked: Option<Vec<ClipId>> = match (clip_p(p, "clip"), p.get("clips").and_then(Value::as_array)) {
         (Some(c), _) => Some(vec![c]),
         (None, Some(a)) => Some(a.iter().filter_map(Value::as_u64).map(ClipId).collect()),
         (None, None) => None,
     };
+<<<<<<< HEAD
     let mut clips = match asked {
         Some(c) if !c.iter().all(video) => return Err("not a video clip".into()),
         Some(c) => c,
@@ -293,6 +344,23 @@ fn set_lumetri_param(s: &mut Session, clips: &[ClipId], param: &str, v: ParamVal
     edit_lumetri(s, clips, label, None, cmd, |it, idx| {
         let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
         e.params.entry(param.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).value = v.clone();
+=======
+    if !has(&clip) {
+        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
+    }
+    let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Color Grading"))?;
+    Ok((clip, idx))
+}
+
+/// Set a Color Grading parameter (inserting it when an older project's instance lacks it).
+pub(crate) fn set_lumetri_param(s: &mut Session, clip: ClipId, idx: usize, param: &str, v: ParamValue, label: &str) -> Result<()> {
+    let param = param.to_string();
+    s.edit_sequence(label, |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get_mut(idx).ok_or_else(|| bad("lumetri", "no Color Grading"))?;
+        e.params.entry(param.clone()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).value = v.clone();
+>>>>>>> upstream/main
         Ok(())
     })?;
     Ok(())
@@ -363,8 +431,13 @@ fn set_section(s: &mut Session, p: &Value) -> Result<Value> {
     // a toggle follows the clip the panel shows, and every target ends up the same
     let cur = primary_effect(s, &clips).and_then(|e| e.param(param).and_then(|v| v.value.as_bool())).unwrap_or(param != "hsl_on");
     let v = bool_p(p, "on").unwrap_or(!cur);
+<<<<<<< HEAD
     set_lumetri_param(s, &clips, param, ParamValue::Bool(v), "Lumetri Section", cmd)?;
     Ok(json!({"clip": clips.first().map(|c| c.0), "clips": ids(&clips), "param": param, "on": v}))
+=======
+    set_lumetri_param(s, clip, idx, param, ParamValue::Bool(v), "Color Grading Section")?;
+    Ok(json!({"clip": clip.0, "param": param, "on": v}))
+>>>>>>> upstream/main
 }
 
 fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
@@ -522,12 +595,12 @@ fn list_presets(_: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"folders": filmcraft_render::lumetri_presets::FOLDERS, "presets": v}))
 }
 
-/// Lumetri Presets ▸ apply: a new Lumetri Color configured as the preset on each video clip
+/// Color Grading Presets ▸ apply: a new Color Grading configured as the preset on each video clip
 /// (added at the end of the clip's effects, like `effects.apply`).
 fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.applyPreset";
     let name = str_p(p, "name").ok_or_else(|| bad(cmd, "need `name`"))?;
-    let preset = filmcraft_render::lumetri_presets::find(name).ok_or_else(|| bad(cmd, format!("no Lumetri preset `{name}`")))?;
+    let preset = filmcraft_render::lumetri_presets::find(name).ok_or_else(|| bad(cmd, format!("no Color Grading preset `{name}`")))?;
     let clips = crate::commands::clips_p(s, p);
     if clips.is_empty() {
         return Err(bad(cmd, "select clips first"));
@@ -571,18 +644,39 @@ fn preset_thumbnails(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
+<<<<<<< HEAD
 /// Lumetri ▸ Color Wheels & Match ▸ Apply Match (see `filmcraft_render::color_match`): match each
 /// target clip (its frame at the playhead, pinned to the clip) to the sequence frame at the
 /// reference time. Sets the three wheels, their lightness and Basic saturation of every target in
 /// one undo step; a target the reference frame lies in is skipped (`skipped`), and when that leaves
 /// none the command fails.
+=======
+/// Color Grading ▸ Color Wheels & Match ▸ Apply Match (see `filmcraft_render::color_match`): match the
+/// clip at the playhead to the sequence frame at the reference time. Sets the three wheels, their
+/// lightness and Basic saturation in one undo step.
+>>>>>>> upstream/main
 fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.applyMatch";
     let clips = targets(s, p, cmd)?;
     let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
     let reference_t = time_p(s, p, "reference").ok_or_else(|| bad(cmd, "need `referenceTime`, `referenceFrame` or `referenceTimecode`"))?;
     let skin = bool_p(p, "faceDetection").unwrap_or(true);
+<<<<<<< HEAD
     let def = filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri definition"))?;
+=======
+    let q = s.active_sequence().ok_or_else(|| bad("lumetri.applyMatch", "no active sequence"))?;
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad("lumetri.applyMatch", "no such clip"))?;
+    let t = s.playhead().clamp(it.start, it.end() - filmcraft_time::Tick(1));
+    if it.range().contains(reference_t) {
+        return Err(bad("lumetri.applyMatch", "the reference frame is inside the clip being matched; pick a frame from another shot"));
+    }
+    let base = it.effects[idx].clone();
+    // the current shot as Color Grading sees it: the clip with its Color Grading switched off
+    let mut probe = (*s.project).clone();
+    if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
+        pi.effects[idx].enabled = false;
+    }
+>>>>>>> upstream/main
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let opts = filmcraft_render::RenderOptions { scale: 0.25, working_output: true, ..Default::default() };
     let mut reference = None;
@@ -611,6 +705,7 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "the reference frame is inside the clip being matched; pick a frame from another shot"));
     }
     let v2 = |a: [f32; 2]| ParamValue::Vec2(filmcraft_geom::Vec2::new(a[0] as f64, a[1] as f64));
+<<<<<<< HEAD
     let matched: Vec<ClipId> = solved.iter().map(|(c, _)| *c).collect();
     let mut values = solved.iter().map(|(_, m)| {
         [
@@ -627,6 +722,22 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
     edit_lumetri(s, &matched, "Apply Match", None, cmd, |it, idx| {
         let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
         for (k, v) in values.next().ok_or_else(|| bad(cmd, "no match"))? {
+=======
+    let values = [
+        ("wheel_shadows", v2(m.shadows)),
+        ("wheel_midtones", v2(m.midtones)),
+        ("wheel_highlights", v2(m.highlights)),
+        ("wheel_shadows_l", ParamValue::Float(m.lightness[0] as f64)),
+        ("wheel_midtones_l", ParamValue::Float(m.lightness[1] as f64)),
+        ("wheel_highlights_l", ParamValue::Float(m.lightness[2] as f64)),
+        ("saturation", ParamValue::Float(m.saturation as f64)),
+        ("wheels_on", ParamValue::Bool(true)),
+    ];
+    s.edit_sequence("Apply Match", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get_mut(idx).ok_or_else(|| bad("lumetri.applyMatch", "no Color Grading"))?;
+        for (k, v) in &values {
+>>>>>>> upstream/main
             let prm = e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone()));
             prm.keyframes.clear();
             prm.value = v;
