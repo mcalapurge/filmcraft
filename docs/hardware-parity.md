@@ -1,6 +1,16 @@
 # Hardware parity
 
+<<<<<<< HEAD
+<<<<<<< HEAD
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (every Lumetri control on the GPU) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+=======
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (adjustment layers on the GPU compositor) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+>>>>>>> upstream/main
+=======
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (adjustment layers on the GPU compositor) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
+>>>>>>> upstream/main
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -50,9 +60,15 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Feature | Premiere (Mercury Playback Engine: Metal, CUDA, OpenCL) | Ours (wgpu: Metal, D3D12, Vulkan) | % |
 |---|---|---|---|
 | Compositing, blend modes, transforms | GPU | **GPU** (#32), CPU compositor is the oracle | 90% |
+<<<<<<< HEAD
 | Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, all Lumetri controls (SDR/PQ/HLG) | ~40% |
 | Lumetri curves, wheels, HSL secondary | GPU | **GPU** (WGSL compute), including HSL mask refinement, selective colour, 1D / shaper / 3D LUTs and HDR (PQ, HLG); tested against CPU pixels. An adjustment layer with masks, partial opacity, another blend mode or motion still renders the frame on the CPU | 90% |
+=======
+| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Color Grading basic / creative / vignette | ~40% |
+| Color Grading curves, wheels, HSL secondary | GPU | CPU | 0% |
+>>>>>>> upstream/main
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
+| Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 4.0–5.0× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
 | Software adapter fallback | warns | silently renders everything on the CPU (#632) | — |
@@ -75,7 +91,11 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 
 **Hardware dimension: ~45%, 120–200 h.** Ahead of Premiere: hardware decode on Linux (VA-API,
 NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 35
+<<<<<<< HEAD
 (keys, masks, complex transitions); Quick Sync and AMD encoders on Windows;
+=======
+(Color Grading curves / wheels / HSL, keys, masks, transitions); Quick Sync and AMD encoders on Windows;
+>>>>>>> upstream/main
 VideoToolbox Main 10 HDR encode; 10-bit / 4:2:2 decode off macOS; HDR display; external video
 I/O and control surfaces (need hardware we don't own). Calibration: one decode backend ~3–5 h,
 one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
@@ -84,5 +104,10 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
+<<<<<<< HEAD
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
 | 2026-10-25 | minor | Every Lumetri control group on the GPU (curves, wheels, HSL secondary with mask refinement, selective colour, LUTs with tetrahedral interpolation, PQ / HLG); plain full-frame adjustment layers and HDR display conversion are GPU canvas passes. Lumetri row 0% → 90%; dimension estimate unchanged |
+=======
+| 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Color Grading on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
+>>>>>>> upstream/main
